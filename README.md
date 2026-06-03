@@ -1,6 +1,6 @@
 # S&P 500 Forward P/E Valuation Bands
 
-Interactive S&P 500 valuation bands for GitHub Pages. The chart plots SPX against next-twelve-month EPS multiplied by 18x through 23x P/E multiples.
+Interactive S&P 500 valuation bands for GitHub Pages. The chart plots SPX against next-twelve-month EPS multiplied by an adaptive six-band P/E window centered around the selected point's actual forward P/E.
 
 ## Data
 
@@ -15,6 +15,8 @@ Formula:
 ```txt
 band level = NTM EPS estimate * P/E multiple
 ```
+
+The multiple window is generated dynamically as you slide across the chart. For example, a 21x market displays 18x-23x, while a 16x market displays 13x-18x.
 
 The committed dataset lives at `src/data/valuation-data.json`. GitHub Actions refreshes it during each Pages deployment.
 

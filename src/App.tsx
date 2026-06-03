@@ -19,24 +19,16 @@ import {
 import valuationData from './data/valuation-data.json'
 import './App.css'
 
-const BAND_MULTIPLES = [18, 19, 20, 21, 22, 23] as const
+const BAND_SLOT_COUNT = 6
 const DEFAULT_PERIOD = '18M'
+const BAND_ANIMATION_MS = 320
 
 const COLORS = {
   spx: '#4f8cff',
   ink: '#e7edf6',
   grid: 'rgba(148, 163, 184, 0.12)',
-  bands: {
-    18: '#ef5f67',
-    19: '#f2c94c',
-    20: '#00c805',
-    21: '#f2994a',
-    22: '#26c6da',
-    23: '#8ab4f8',
-  },
+  bands: ['#ef5f67', '#f2c94c', '#00c805', '#f2994a', '#26c6da', '#8ab4f8'],
 } as const
-
-type BandMultiple = (typeof BAND_MULTIPLES)[number]
 
 type RawDatum = {
   date: string
@@ -59,7 +51,6 @@ type DataFile = {
 
 type ChartDatum = RawDatum & {
   time: Time
-  bands: Record<BandMultiple, number>
 }
 
 type PeriodOption = {
@@ -130,6 +121,10 @@ function asLineData(rows: ChartDatum[], valueForRow: (row: ChartDatum) => number
   return rows.map((row) => ({ time: row.time, value: valueForRow(row) }))
 }
 
+function bandDataForMultiple(rows: ChartDatum[], multiple: number) {
+  return asLineData(rows, (row) => row.eps * multiple) as LineData[]
+}
+
 function getPeriodStartIndex(rows: ChartDatum[], period: PeriodOption) {
   if (!period.days && !period.start) {
     return 0
@@ -152,35 +147,52 @@ function getPeriodStartIndex(rows: ChartDatum[], period: PeriodOption) {
   )
 }
 
-function nearestBand(pe: number) {
-  return BAND_MULTIPLES.reduce((best, next) =>
-    Math.abs(next - pe) < Math.abs(best - pe) ? next : best,
-  )
+function nearestMultiple(pe: number) {
+  return Math.max(1, Math.round(pe))
 }
 
-function lineWidthForBand(pe: BandMultiple, activeBand: BandMultiple): 1 | 2 | 3 {
+function adaptiveMultiples(pe: number) {
+  const nearest = nearestMultiple(pe)
+  const start = Math.max(1, nearest - 3)
+
+  return Array.from({ length: BAND_SLOT_COUNT }, (_, index) => start + index)
+}
+
+function colorForSlot(index: number) {
+  return COLORS.bands[Math.max(0, Math.min(index, COLORS.bands.length - 1))]
+}
+
+function colorForMultiple(multiple: number, multiples: number[]) {
+  return colorForSlot(Math.max(0, multiples.indexOf(multiple)))
+}
+
+function lineWidthForBand(pe: number, activeBand: number): 1 | 2 | 3 {
   if (pe === activeBand) {
     return 3
   }
 
-  if (pe === 20 || pe === 21) {
+  if (Math.abs(pe - activeBand) === 1) {
     return 2
   }
 
   return 1
 }
 
+function easeOutCubic(progress: number) {
+  return 1 - (1 - progress) ** 3
+}
+
+function interpolateBandData(start: LineData[], target: LineData[], progress: number) {
+  return target.map((point, index) => ({
+    time: point.time,
+    value: Number(start[index]?.value ?? point.value) + (point.value - Number(start[index]?.value ?? point.value)) * progress,
+  }))
+}
+
 function normalizeRows(data: DataFile) {
   return data.rows.map((row) => ({
     ...row,
     time: row.date as Time,
-    bands: BAND_MULTIPLES.reduce(
-      (bands, multiple) => ({
-        ...bands,
-        [multiple]: row.eps * multiple,
-      }),
-      {} as Record<BandMultiple, number>,
-    ),
   }))
 }
 
@@ -188,7 +200,8 @@ type ValuationChartProps = {
   rows: ChartDatum[]
   period: PeriodOption
   selectedIndex: number
-  activeBand: BandMultiple
+  activeBand: number
+  bandMultiples: number[]
   onSelectIndex: (index: number) => void
 }
 
@@ -197,13 +210,20 @@ function ValuationChart({
   period,
   selectedIndex,
   activeBand,
+  bandMultiples,
   onSelectIndex,
 }: ValuationChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const spxSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
-  const bandSeriesRef = useRef<Map<BandMultiple, ISeriesApi<'Line'>>>(new Map())
+  const bandSeriesRef = useRef<ISeriesApi<'Line'>[]>([])
+  const currentBandMultiplesRef = useRef<number[]>(bandMultiples)
+  const initialBandMultiplesRef = useRef<number[]>(bandMultiples)
+  const initialActiveBandRef = useRef<number>(activeBand)
+  const renderedBandDataRef = useRef<LineData[][]>([])
+  const animationFrameRef = useRef<number | null>(null)
   const indexByTime = useMemo(() => new Map(rows.map((row, index) => [String(row.time), index])), [rows])
+  const bandMultiplesKey = bandMultiples.join(',')
 
   useEffect(() => {
     const container = containerRef.current
@@ -274,20 +294,23 @@ function ValuationChart({
     })
 
     chartRef.current = chart
-    bandSeriesRef.current = new Map()
+    bandSeriesRef.current = []
+    currentBandMultiplesRef.current = initialBandMultiplesRef.current
 
-    BAND_MULTIPLES.forEach((multiple) => {
+    initialBandMultiplesRef.current.forEach((multiple, index) => {
       const series = chart.addSeries(LineSeries, {
-        color: COLORS.bands[multiple],
+        color: colorForSlot(index),
         crosshairMarkerVisible: false,
         lastValueVisible: false,
-        lineWidth: multiple === 20 || multiple === 21 ? 2 : 1,
+        lineWidth: lineWidthForBand(multiple, initialActiveBandRef.current),
         priceLineVisible: false,
         title: `${multiple}x`,
       })
 
-      series.setData(asLineData(rows, (row) => row.bands[multiple]) as LineData[])
-      bandSeriesRef.current.set(multiple, series)
+      const data = bandDataForMultiple(rows, multiple)
+      series.setData(data)
+      renderedBandDataRef.current[index] = data
+      bandSeriesRef.current[index] = series
     })
 
     const spxSeries = chart.addSeries(LineSeries, {
@@ -360,6 +383,10 @@ function ValuationChart({
     resizeObserver.observe(container)
 
     return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+        animationFrameRef.current = null
+      }
       resizeObserver.disconnect()
       chart.unsubscribeCrosshairMove(handleCrosshairMove)
       container.removeEventListener('pointerdown', handlePointerMove)
@@ -368,7 +395,8 @@ function ValuationChart({
       chart.remove()
       chartRef.current = null
       spxSeriesRef.current = null
-      bandSeriesRef.current = new Map()
+      bandSeriesRef.current = []
+      renderedBandDataRef.current = []
     }
   }, [indexByTime, onSelectIndex, rows])
 
@@ -400,12 +428,82 @@ function ValuationChart({
   }, [rows, selectedIndex])
 
   useEffect(() => {
-    bandSeriesRef.current.forEach((series, multiple) => {
+    bandSeriesRef.current.forEach((series, index) => {
+      const multiple = bandMultiples[index]
+
+      if (!multiple) {
+        return
+      }
+
       series.applyOptions({
+        color: colorForSlot(index),
         lineWidth: lineWidthForBand(multiple, activeBand),
+        title: `${multiple}x`,
       })
     })
-  }, [activeBand])
+  }, [activeBand, bandMultiples, bandMultiplesKey])
+
+  useEffect(() => {
+    const series = bandSeriesRef.current
+
+    if (series.length === 0) {
+      return undefined
+    }
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current)
+    }
+
+    const targetData = bandMultiples.map((multiple) => bandDataForMultiple(rows, multiple))
+    const startData =
+      renderedBandDataRef.current.length === targetData.length
+        ? renderedBandDataRef.current
+        : currentBandMultiplesRef.current.map((multiple) => bandDataForMultiple(rows, multiple))
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    if (reduceMotion) {
+      targetData.forEach((data, index) => series[index]?.setData(data))
+      renderedBandDataRef.current = targetData
+      currentBandMultiplesRef.current = bandMultiples
+      return undefined
+    }
+
+    const startedAt = performance.now()
+    let lastFrameAt = 0
+
+    const tick = (now: number) => {
+      const elapsed = now - startedAt
+      const progress = easeOutCubic(Math.min(1, elapsed / BAND_ANIMATION_MS))
+
+      if (now - lastFrameAt > 24 || progress === 1) {
+        const nextRenderedData = targetData.map((target, index) =>
+          interpolateBandData(startData[index] ?? target, target, progress),
+        )
+
+        nextRenderedData.forEach((data, index) => series[index]?.setData(data))
+        renderedBandDataRef.current = nextRenderedData
+        lastFrameAt = now
+      }
+
+      if (progress < 1) {
+        animationFrameRef.current = requestAnimationFrame(tick)
+      } else {
+        targetData.forEach((data, index) => series[index]?.setData(data))
+        renderedBandDataRef.current = targetData
+        currentBandMultiplesRef.current = bandMultiples
+        animationFrameRef.current = null
+      }
+    }
+
+    animationFrameRef.current = requestAnimationFrame(tick)
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+        animationFrameRef.current = null
+      }
+    }
+  }, [bandMultiples, bandMultiplesKey, rows])
 
   return <div ref={containerRef} className="chart-canvas" aria-label="S&P 500 valuation bands chart" />
 }
@@ -417,18 +515,23 @@ function App() {
   const latest = rows[latestIndex]
   const [periodId, setPeriodId] = useState(DEFAULT_PERIOD)
   const [selectedIndex, setSelectedIndex] = useState(latestIndex)
-  const [activeBand, setActiveBand] = useState<BandMultiple>(nearestBand(latest.pe))
+  const [requestedActiveBand, setRequestedActiveBand] = useState<number | null>(null)
   const period = PERIODS.find((option) => option.id === periodId) ?? PERIODS[0]
   const visibleStartIndex = getPeriodStartIndex(rows, period)
   const periodStart = rows[visibleStartIndex]
   const selected = rows[selectedIndex] ?? latest
-  const selectedBandLevel = selected.bands[activeBand]
+  const selectedNearestBand = nearestMultiple(selected.pe)
+  const bandMultiples = useMemo(() => adaptiveMultiples(selectedNearestBand), [selectedNearestBand])
+  const activeBand =
+    requestedActiveBand !== null && bandMultiples.includes(requestedActiveBand)
+      ? requestedActiveBand
+      : selectedNearestBand
+  const selectedBandLevel = selected.eps * activeBand
   const selectedDelta = selected.spx - selectedBandLevel
   const selectedDeltaPercent = (selectedDelta / selectedBandLevel) * 100
-  const selectedNearestBand = nearestBand(selected.pe)
-  const latestBandLevels = BAND_MULTIPLES.map((multiple) => ({
+  const bandLevels = bandMultiples.map((multiple) => ({
     multiple,
-    value: latest.bands[multiple],
+    value: selected.eps * multiple,
   })).reverse()
   const spxChange = ((latest.spx - periodStart.spx) / periodStart.spx) * 100
   const epsChange = ((latest.eps - periodStart.eps) / periodStart.eps) * 100
@@ -436,6 +539,7 @@ function App() {
   const handlePeriodChange = (nextPeriod: string) => {
     setPeriodId(nextPeriod)
     setSelectedIndex(latestIndex)
+    setRequestedActiveBand(null)
   }
 
   const handleSelectIndex = useCallback((index: number) => {
@@ -456,7 +560,7 @@ function App() {
         <div className="quote-strip" aria-label="Latest valuation stats">
           <QuoteItem label="S&P 500" value={formatIndex(latest.spx)} change={`${formatPercent(spxChange)} view`} />
           <QuoteItem label="NTM EPS" value={formatMoney(latest.eps)} change={`${formatPercent(epsChange)} view`} />
-          <QuoteItem label="Forward P/E" value={`${decimalFormatter.format(latest.pe)}x`} change={`Nearest ${nearestBand(latest.pe)}x`} />
+          <QuoteItem label="Forward P/E" value={`${decimalFormatter.format(latest.pe)}x`} change={`Nearest ${nearestMultiple(latest.pe)}x`} />
         </div>
       </header>
 
@@ -487,6 +591,7 @@ function App() {
               period={period}
               selectedIndex={selectedIndex}
               activeBand={activeBand}
+              bandMultiples={bandMultiples}
               onSelectIndex={handleSelectIndex}
             />
           </div>
@@ -532,20 +637,20 @@ function App() {
           </aside>
         </div>
 
-        <div className="band-ladder" aria-label="Latest valuation band levels">
+        <div className="band-ladder" aria-label="Active valuation band levels">
           <div className="ladder-title">
             <BarChart3 aria-hidden="true" size={18} />
-            Latest Bands
+            Active Bands
           </div>
           <div className="ladder-buttons">
-            {latestBandLevels.map(({ multiple, value }) => (
+            {bandLevels.map(({ multiple, value }) => (
               <button
                 key={multiple}
                 type="button"
                 aria-pressed={activeBand === multiple}
                 className={activeBand === multiple ? 'is-active' : ''}
-                style={{ '--band-color': COLORS.bands[multiple] } as React.CSSProperties}
-                onClick={() => setActiveBand(multiple)}
+                style={{ '--band-color': colorForMultiple(multiple, bandMultiples) } as React.CSSProperties}
+                onClick={() => setRequestedActiveBand(multiple)}
               >
                 <span>{multiple}x</span>
                 <strong>{formatIndex(value)}</strong>
@@ -562,7 +667,7 @@ function App() {
             Data and Formula
           </div>
           <p>
-            Band level = NTM EPS estimate x P/E multiple. Source:{' '}
+            Band level = NTM EPS estimate x selected P/E multiple. Source:{' '}
             <a href={dataFile.source.url} target="_blank" rel="noreferrer">
               {dataFile.source.name}
               <ExternalLink aria-hidden="true" size={14} />
