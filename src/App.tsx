@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Activity,
   BarChart3,
   ExternalLink,
-  TrendingUp,
 } from 'lucide-react'
 import {
   ColorType,
@@ -13,7 +13,6 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
-  type MouseEventParams,
   type Time,
 } from 'lightweight-charts'
 import valuationData from './data/valuation-data.json'
@@ -21,12 +20,12 @@ import './App.css'
 
 const BAND_SLOT_COUNT = 6
 const DEFAULT_PERIOD = '18M'
-const BAND_ANIMATION_MS = 320
+const BAND_ANIMATION_MS = 260
 
 const COLORS = {
   spx: '#4f8cff',
   ink: '#e7edf6',
-  grid: 'rgba(148, 163, 184, 0.12)',
+  grid: 'rgba(148, 163, 184, 0.10)',
   bands: ['#ef5f67', '#f2c94c', '#00c805', '#f2994a', '#26c6da', '#8ab4f8'],
 } as const
 
@@ -237,8 +236,9 @@ function ValuationChart({
       height: container.clientHeight,
       autoSize: false,
       layout: {
-        background: { type: ColorType.Solid, color: '#0b1017' },
+        background: { type: ColorType.Solid, color: '#080d13' },
         textColor: '#a9b4c2',
+        fontSize: container.clientWidth < 620 ? 11 : 12,
         fontFamily:
           'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       },
@@ -259,7 +259,7 @@ function ValuationChart({
       },
       timeScale: {
         borderVisible: false,
-        rightOffset: 16,
+        rightOffset: container.clientWidth < 620 ? 4 : 14,
         fixLeftEdge: true,
         fixRightEdge: true,
         timeVisible: false,
@@ -269,27 +269,30 @@ function ValuationChart({
         vertLine: {
           color: 'rgba(231, 237, 246, 0.34)',
           labelBackgroundColor: COLORS.ink,
+          labelVisible: false,
           style: LineStyle.Solid,
           width: 1,
         },
         horzLine: {
-          color: 'rgba(79, 140, 255, 0.55)',
+          color: 'rgba(79, 140, 255, 0.30)',
           labelBackgroundColor: COLORS.spx,
+          labelVisible: false,
           style: LineStyle.Dashed,
+          visible: false,
           width: 1,
         },
       },
       handleScroll: {
-        horzTouchDrag: true,
-        mouseWheel: true,
-        pressedMouseMove: true,
+        horzTouchDrag: false,
+        mouseWheel: false,
+        pressedMouseMove: false,
         vertTouchDrag: false,
       },
       handleScale: {
-        axisDoubleClickReset: true,
+        axisDoubleClickReset: false,
         axisPressedMouseMove: false,
-        mouseWheel: true,
-        pinch: true,
+        mouseWheel: false,
+        pinch: false,
       },
     })
 
@@ -327,18 +330,6 @@ function ValuationChart({
     spxSeries.setData(asLineData(rows, (row) => row.spx) as LineData[])
     spxSeriesRef.current = spxSeries
 
-    const handleCrosshairMove = (params: MouseEventParams<Time>) => {
-      if (!params.time) {
-        return
-      }
-
-      const index = indexByTime.get(String(params.time))
-
-      if (index !== undefined) {
-        onSelectIndex(index)
-      }
-    }
-
     const selectFromCoordinate = (clientX: number) => {
       const { left } = container.getBoundingClientRect()
       const time = chart.timeScale().coordinateToTime(clientX - left)
@@ -354,29 +345,42 @@ function ValuationChart({
       }
     }
 
-    const handlePointerMove = (event: PointerEvent) => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.pointerType === 'touch') {
+        return
+      }
+
       selectFromCoordinate(event.clientX)
     }
 
-    const handleTouchMove = (event: TouchEvent) => {
-      const touch = event.touches.item(0)
-
-      if (touch) {
-        selectFromCoordinate(touch.clientX)
+    const handlePointerMove = (event: PointerEvent) => {
+      if (event.pointerType !== 'mouse') {
+        return
       }
+
+      selectFromCoordinate(event.clientX)
     }
 
-    chart.subscribeCrosshairMove(handleCrosshairMove)
-    container.addEventListener('pointerdown', handlePointerMove)
-    container.addEventListener('pointermove', handlePointerMove)
-    container.addEventListener('touchmove', handleTouchMove, { passive: true })
+    container.addEventListener('pointerdown', handlePointerDown, { passive: true })
+    container.addEventListener('pointermove', handlePointerMove, { passive: true })
 
     const resizeObserver = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect
+      const compact = width < 620
 
       chart.applyOptions({
         width: Math.max(320, Math.floor(width)),
         height: Math.max(320, Math.floor(height)),
+        layout: {
+          fontSize: compact ? 11 : 12,
+        },
+        timeScale: {
+          rightOffset: compact ? 4 : 14,
+        },
+      })
+
+      spxSeriesRef.current?.applyOptions({
+        lineWidth: compact ? 3 : 4,
       })
     })
 
@@ -388,10 +392,8 @@ function ValuationChart({
         animationFrameRef.current = null
       }
       resizeObserver.disconnect()
-      chart.unsubscribeCrosshairMove(handleCrosshairMove)
-      container.removeEventListener('pointerdown', handlePointerMove)
+      container.removeEventListener('pointerdown', handlePointerDown)
       container.removeEventListener('pointermove', handlePointerMove)
-      container.removeEventListener('touchmove', handleTouchMove)
       chart.remove()
       chartRef.current = null
       spxSeriesRef.current = null
@@ -505,7 +507,26 @@ function ValuationChart({
     }
   }, [bandMultiples, bandMultiplesKey, rows])
 
-  return <div ref={containerRef} className="chart-canvas" aria-label="S&P 500 valuation bands chart" />
+  return (
+    <div className="chart-shell">
+      <div className="chart-band-key" aria-label="Displayed valuation multiples">
+        <span className="key-item key-spx">
+          <span style={{ '--key-color': COLORS.spx } as React.CSSProperties} />
+          S&P 500
+        </span>
+        {bandMultiples.map((multiple, index) => (
+          <span
+            key={multiple}
+            className={activeBand === multiple ? 'key-item key-band is-active' : 'key-item key-band'}
+          >
+            <span style={{ '--key-color': colorForSlot(index) } as React.CSSProperties} />
+            {multiple}x
+          </span>
+        ))}
+      </div>
+      <div ref={containerRef} className="chart-canvas" aria-label="S&P 500 valuation bands chart" />
+    </div>
+  )
 }
 
 function App() {
@@ -535,6 +556,7 @@ function App() {
   })).reverse()
   const spxChange = ((latest.spx - periodStart.spx) / periodStart.spx) * 100
   const epsChange = ((latest.eps - periodStart.eps) / periodStart.eps) * 100
+  const dateRangeLabel = `${toMonth(periodStart.date)} to ${toMonth(latest.date)}`
 
   const handlePeriodChange = (nextPeriod: string) => {
     setPeriodId(nextPeriod)
@@ -546,26 +568,40 @@ function App() {
     setSelectedIndex(index)
   }, [])
 
+  const handleDateLensChange = (index: number) => {
+    setSelectedIndex(index)
+  }
+
   return (
     <main className="app-shell">
       <header className="market-header" aria-labelledby="page-title">
-        <div className="brand-row">
-          <div>
+        <div className="title-block">
+          <div className="ticker-line">
             <span className="ticker-pill">SPX</span>
-            <h1 id="page-title">Forward P/E Valuation Bands</h1>
+            <span className="as-of">As of {toDisplayDate(latest.date)}</span>
           </div>
-          <div className="as-of">As of {toDisplayDate(latest.date)}</div>
+          <h1 id="page-title">Forward P/E Valuation Bands</h1>
         </div>
 
-        <div className="quote-strip" aria-label="Latest valuation stats">
-          <QuoteItem label="S&P 500" value={formatIndex(latest.spx)} change={`${formatPercent(spxChange)} view`} />
-          <QuoteItem label="NTM EPS" value={formatMoney(latest.eps)} change={`${formatPercent(epsChange)} view`} />
-          <QuoteItem label="Forward P/E" value={`${decimalFormatter.format(latest.pe)}x`} change={`Nearest ${nearestMultiple(latest.pe)}x`} />
+        <div className="market-pulse" aria-label="Latest valuation stats">
+          <div className="primary-quote">
+            <span>S&P 500</span>
+            <strong>{formatIndex(latest.spx)}</strong>
+            <small>{formatPercent(spxChange)} view</small>
+          </div>
+          <div className="mini-metrics">
+            <MetricItem
+              label="Forward P/E"
+              value={`${decimalFormatter.format(latest.pe)}x`}
+              detail={`Nearest ${nearestMultiple(latest.pe)}x`}
+            />
+            <MetricItem label="NTM EPS" value={formatMoney(latest.eps)} detail={`${formatPercent(epsChange)} view`} />
+          </div>
         </div>
       </header>
 
       <section className="chart-stage" aria-label="Interactive valuation chart">
-        <div className="control-strip">
+        <div className="chart-toolbar">
           <div className="period-buttons" role="group" aria-label="Chart time period">
             {PERIODS.map((option) => (
               <button
@@ -579,9 +615,7 @@ function App() {
               </button>
             ))}
           </div>
-          <div className="range-note">
-            {toMonth(periodStart.date)} to {toMonth(latest.date)}
-          </div>
+          <div className="range-note">{dateRangeLabel}</div>
         </div>
 
         <div className="chart-grid">
@@ -594,6 +628,21 @@ function App() {
               bandMultiples={bandMultiples}
               onSelectIndex={handleSelectIndex}
             />
+            <label className="date-control">
+              <span className="date-control-copy">
+                <span>Date</span>
+                <strong>{toDisplayDate(selected.date)}</strong>
+              </span>
+              <input
+                type="range"
+                min={visibleStartIndex}
+                max={latestIndex}
+                value={selectedIndex}
+                aria-label="Date lens"
+                onInput={(event) => handleDateLensChange(Number(event.currentTarget.value))}
+                onChange={(event) => handleDateLensChange(Number(event.currentTarget.value))}
+              />
+            </label>
           </div>
 
           <aside className="valuation-lens" aria-label="Valuation lens">
@@ -606,12 +655,6 @@ function App() {
                 {selectedDelta >= 0 ? 'Above' : 'Below'} {activeBand}x
               </div>
             </div>
-            <div className="lens-grid">
-              <Readout label="SPX" value={formatIndex(selected.spx)} />
-              <Readout label="NTM EPS" value={formatMoney(selected.eps)} />
-              <Readout label="Actual P/E" value={`${decimalFormatter.format(selected.pe)}x`} />
-              <Readout label="Nearest" value={`${selectedNearestBand}x`} />
-            </div>
             <div className="delta-panel">
               <div>
                 <span>{activeBand}x band</span>
@@ -622,18 +665,12 @@ function App() {
                 {formatIndex(selectedDelta)} / {formatPercent(selectedDeltaPercent)}
               </div>
             </div>
-            <label className="scrubber">
-              <span>Date Lens</span>
-              <input
-                type="range"
-                min={visibleStartIndex}
-                max={latestIndex}
-                value={selectedIndex}
-                aria-label="Date lens"
-                onInput={(event) => setSelectedIndex(Number(event.currentTarget.value))}
-                onChange={(event) => setSelectedIndex(Number(event.currentTarget.value))}
-              />
-            </label>
+            <div className="lens-grid">
+              <Readout label="SPX" value={formatIndex(selected.spx)} />
+              <Readout label="NTM EPS" value={formatMoney(selected.eps)} />
+              <Readout label="Actual P/E" value={`${decimalFormatter.format(selected.pe)}x`} />
+              <Readout label="Nearest" value={`${selectedNearestBand}x`} />
+            </div>
           </aside>
         </div>
 
@@ -663,7 +700,7 @@ function App() {
       <footer className="source-band" aria-label="Data source">
         <div>
           <div className="source-title">
-            <TrendingUp aria-hidden="true" size={18} />
+            <Activity aria-hidden="true" size={18} />
             Data and Formula
           </div>
           <p>
@@ -682,20 +719,20 @@ function App() {
   )
 }
 
-function QuoteItem({
+function MetricItem({
   label,
   value,
-  change,
+  detail,
 }: {
   label: string
   value: string
-  change: string
+  detail: string
 }) {
   return (
-    <div className="quote-item">
+    <div className="market-metric">
       <span>{label}</span>
       <strong>{value}</strong>
-      <small>{change}</small>
+      <small>{detail}</small>
     </div>
   )
 }

@@ -29,14 +29,7 @@ body {
   min-width: 320px;
   margin: 0;
   overflow-x: hidden;
-  background:
-    linear-gradient(rgba(148, 163, 184, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 184, 0.025) 1px, transparent 1px),
-    var(--bg);
-  background-size:
-    40px 40px,
-    40px 40px,
-    auto;
+  background: var(--bg);
 }
 
 button,
