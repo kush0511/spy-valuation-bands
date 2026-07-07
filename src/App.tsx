@@ -1,8 +1,21 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react'
 import {
   Activity,
   BarChart3,
+  CalendarDays,
   ExternalLink,
+  Gauge,
+  RefreshCcw,
+  Target,
+  TrendingUp,
 } from 'lucide-react'
 import {
   ColorType,
@@ -11,6 +24,7 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type MouseEventParams,
   type Time,
 } from 'lightweight-charts'
 import valuationData from './data/valuation-data.json'
@@ -18,20 +32,21 @@ import './App.css'
 
 const BAND_SLOT_COUNT = 6
 const DEFAULT_PERIOD = '18M'
+const DAY_IN_MS = 86_400_000
 
 const COLORS = {
-  spx: '#6ea2ff',
-  ink: '#edf4ff',
-  chartBg: '#070b10',
-  grid: 'rgba(139, 154, 174, 0.14)',
-  bands: ['#ff6678', '#f2c84b', '#27d65b', '#ffad4d', '#39d6e8', '#a8c8ff'],
+  spx: '#8fb8ff',
+  ink: '#f2f7ff',
+  chartBg: '#071015',
+  grid: 'rgba(195, 210, 225, 0.14)',
+  bands: ['#e55365', '#f2b84b', '#20bf6b', '#ff985a', '#37c2d6', '#b7ccff'],
   mutedBands: [
-    'rgba(255, 102, 120, 0.62)',
-    'rgba(242, 200, 75, 0.66)',
-    'rgba(39, 214, 91, 0.72)',
-    'rgba(255, 173, 77, 0.76)',
-    'rgba(57, 214, 232, 0.72)',
-    'rgba(168, 200, 255, 0.66)',
+    'rgba(229, 83, 101, 0.58)',
+    'rgba(242, 184, 75, 0.62)',
+    'rgba(32, 191, 107, 0.68)',
+    'rgba(255, 152, 90, 0.64)',
+    'rgba(55, 194, 214, 0.62)',
+    'rgba(183, 204, 255, 0.58)',
   ],
 } as const
 
@@ -64,6 +79,8 @@ type PeriodOption = {
   days?: number
   start?: string
 }
+
+type Tone = 'positive' | 'negative' | 'neutral'
 
 const PERIODS: PeriodOption[] = [
   { id: '1M', label: '1M', days: 31 },
@@ -126,6 +143,37 @@ function formatMultiple(value: number) {
   return `${decimalFormatter.format(value)}x`
 }
 
+function pluralizeDay(days: number) {
+  return `${days} day${days === 1 ? '' : 's'}`
+}
+
+function dayDelta(fromDate: string, toDate: string) {
+  const from = new Date(`${fromDate}T00:00:00Z`).getTime()
+  const to = new Date(`${toDate}T00:00:00Z`).getTime()
+
+  return Math.max(0, Math.round((to - from) / DAY_IN_MS))
+}
+
+function timeToDate(time: Time | undefined) {
+  if (!time) {
+    return null
+  }
+
+  if (typeof time === 'string') {
+    return time
+  }
+
+  if (typeof time === 'number') {
+    return new Date(time * 1000).toISOString().slice(0, 10)
+  }
+
+  return [
+    time.year,
+    String(time.month).padStart(2, '0'),
+    String(time.day).padStart(2, '0'),
+  ].join('-')
+}
+
 function asLineData(rows: ChartDatum[], valueForRow: (row: ChartDatum) => number) {
   return rows.map((row) => ({ time: row.time, value: valueForRow(row) }))
 }
@@ -147,7 +195,7 @@ function getPeriodStartIndex(rows: ChartDatum[], period: PeriodOption) {
 
   const targetDate = period.start
     ? new Date(`${period.start}T00:00:00Z`)
-    : new Date(new Date(`${latest.date}T00:00:00Z`).getTime() - Number(period.days) * 86_400_000)
+    : new Date(new Date(`${latest.date}T00:00:00Z`).getTime() - Number(period.days) * DAY_IN_MS)
 
   const target = targetDate.toISOString().slice(0, 10)
   const index = rows.findIndex((row) => row.date >= target)
@@ -172,10 +220,6 @@ function colorForSlot(index: number, active = false) {
   return active ? COLORS.bands[safeIndex] : COLORS.mutedBands[safeIndex]
 }
 
-function colorForMultiple(multiple: number, multiples: number[]) {
-  return COLORS.bands[Math.max(0, multiples.indexOf(multiple))]
-}
-
 function lineWidthForBand(multiple: number, activeBand: number): 1 | 2 | 3 {
   if (multiple === activeBand) {
     return 3
@@ -195,7 +239,7 @@ function normalizeRows(data: DataFile) {
   }))
 }
 
-function toneForValue(value: number) {
+function toneForValue(value: number): Tone {
   if (value > 0) {
     return 'positive'
   }
@@ -207,11 +251,37 @@ function toneForValue(value: number) {
   return 'neutral'
 }
 
+function toneForValuationGap(delta: number): Tone {
+  if (delta > 0) {
+    return 'negative'
+  }
+
+  if (delta < 0) {
+    return 'positive'
+  }
+
+  return 'neutral'
+}
+
+function valuationStatus(delta: number, multiple: number) {
+  return `${delta >= 0 ? 'Above' : 'Below'} ${multiple}x`
+}
+
+function railPosition(value: number, min: number, max: number) {
+  if (max === min) {
+    return 50
+  }
+
+  return Math.min(100, Math.max(0, ((value - min) / (max - min)) * 100))
+}
+
 type ValuationChartProps = {
   rows: ChartDatum[]
   period: PeriodOption
   activeBand: number
   bandMultiples: number[]
+  focusDate: string
+  onFocusDate: (date: string) => void
 }
 
 function ValuationChart({
@@ -219,6 +289,8 @@ function ValuationChart({
   period,
   activeBand,
   bandMultiples,
+  focusDate,
+  onFocusDate,
 }: ValuationChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -240,7 +312,7 @@ function ValuationChart({
       autoSize: false,
       layout: {
         background: { type: ColorType.Solid, color: COLORS.chartBg },
-        textColor: '#9fabba',
+        textColor: '#a9b8c8',
         fontSize: compact ? 11 : 12,
         fontFamily:
           'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -253,7 +325,7 @@ function ValuationChart({
         priceFormatter: (price: number) => formatIndex(price),
       },
       rightPriceScale: {
-        borderColor: 'rgba(139, 154, 174, 0.22)',
+        borderColor: 'rgba(195, 210, 225, 0.18)',
         entireTextOnly: true,
         scaleMargins: {
           top: 0.08,
@@ -261,15 +333,25 @@ function ValuationChart({
         },
       },
       timeScale: {
-        borderColor: 'rgba(139, 154, 174, 0.22)',
+        borderColor: 'rgba(195, 210, 225, 0.18)',
         rightOffset: compact ? 2 : 8,
         fixLeftEdge: true,
         fixRightEdge: true,
         timeVisible: false,
       },
       crosshair: {
-        vertLine: { visible: false, labelVisible: false },
-        horzLine: { visible: false, labelVisible: false },
+        vertLine: {
+          visible: true,
+          labelVisible: true,
+          color: 'rgba(242, 247, 255, 0.32)',
+          labelBackgroundColor: '#17212b',
+        },
+        horzLine: {
+          visible: true,
+          labelVisible: true,
+          color: 'rgba(242, 247, 255, 0.18)',
+          labelBackgroundColor: '#17212b',
+        },
       },
       handleScroll: {
         horzTouchDrag: false,
@@ -305,7 +387,8 @@ function ValuationChart({
     const spxLineWidth: 3 | 4 = compact ? 3 : 4
     const spxSeries = chart.addSeries(LineSeries, {
       color: COLORS.spx,
-      crosshairMarkerVisible: false,
+      crosshairMarkerVisible: true,
+      crosshairMarkerRadius: compact ? 4 : 5,
       lastValueVisible: false,
       lineWidth: spxLineWidth,
       priceLineVisible: false,
@@ -314,6 +397,16 @@ function ValuationChart({
 
     spxSeries.setData(asLineData(rows, (row) => row.spx) as LineData[])
     spxSeriesRef.current = spxSeries
+
+    const handleCrosshairMove = (param: MouseEventParams<Time>) => {
+      const date = timeToDate(param.time)
+
+      if (date) {
+        onFocusDate(date)
+      }
+    }
+
+    chart.subscribeCrosshairMove(handleCrosshairMove)
 
     const resizeObserver = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect
@@ -333,19 +426,21 @@ function ValuationChart({
 
       spxSeriesRef.current?.applyOptions({
         lineWidth: nextLineWidth,
+        crosshairMarkerRadius: isCompact ? 4 : 5,
       })
     })
 
     resizeObserver.observe(container)
 
     return () => {
+      chart.unsubscribeCrosshairMove(handleCrosshairMove)
       resizeObserver.disconnect()
       chart.remove()
       chartRef.current = null
       spxSeriesRef.current = null
       bandSeriesRef.current = []
     }
-  }, [activeBand, bandMultiples, bandMultiplesKey, rows])
+  }, [activeBand, bandMultiples, bandMultiplesKey, onFocusDate, rows])
 
   useEffect(() => {
     const chart = chartRef.current
@@ -378,6 +473,18 @@ function ValuationChart({
     })
   }, [activeBand, bandMultiples, bandMultiplesKey])
 
+  useEffect(() => {
+    const chart = chartRef.current
+    const series = spxSeriesRef.current
+    const focused = rows.find((row) => row.date === focusDate)
+
+    if (!chart || !series || !focused) {
+      return
+    }
+
+    chart.setCrosshairPosition(focused.spx, focused.time, series)
+  }, [focusDate, rows])
+
   return (
     <div className="chart-shell">
       <div className="chart-legend" aria-label="Displayed valuation multiples">
@@ -403,152 +510,249 @@ function ValuationChart({
 function App() {
   const dataFile = valuationData as DataFile
   const rows = useMemo(() => normalizeRows(dataFile), [dataFile])
+  const rowByDate = useMemo(() => new Map(rows.map((row) => [row.date, row])), [rows])
   const latest = rows.at(-1) ?? rows[0]
   const [periodId, setPeriodId] = useState(DEFAULT_PERIOD)
+  const [focusDate, setFocusDate] = useState<string | null>(null)
   const [requestedActiveBand, setRequestedActiveBand] = useState<number | null>(null)
   const period = PERIODS.find((option) => option.id === periodId) ?? PERIODS[0]
   const visibleStartIndex = getPeriodStartIndex(rows, period)
   const visibleRows = rows.slice(visibleStartIndex)
   const periodStart = visibleRows[0] ?? latest
-  const latestNearestBand = nearestMultiple(latest.pe)
-  const bandMultiples = useMemo(() => adaptiveMultiples(latestNearestBand), [latestNearestBand])
+  const focusCandidate = focusDate ? rowByDate.get(focusDate) : null
+  const focusedRow = focusCandidate && focusCandidate.date >= periodStart.date ? focusCandidate : latest
+  const isLatestFocus = focusedRow.date === latest.date
+  const hasDormantFocus = focusDate !== null && focusDate !== latest.date
+  const focusNearestBand = nearestMultiple(focusedRow.pe)
+  const bandMultiples = useMemo(() => adaptiveMultiples(focusNearestBand), [focusNearestBand])
   const activeBand =
     requestedActiveBand !== null && bandMultiples.includes(requestedActiveBand)
       ? requestedActiveBand
-      : latestNearestBand
-  const activeBandLevel = latest.eps * activeBand
-  const activeBandDelta = latest.spx - activeBandLevel
-  const activeBandDeltaPercent = (activeBandDelta / activeBandLevel) * 100
-  const statusLabel = `${activeBandDelta >= 0 ? 'Above' : 'Below'} ${activeBand}x`
+      : focusNearestBand
+  const focusBandLevel = focusedRow.eps * activeBand
+  const focusBandDelta = focusedRow.spx - focusBandLevel
+  const focusBandDeltaPercent = (focusBandDelta / focusBandLevel) * 100
+  const focusStatusLabel = valuationStatus(focusBandDelta, activeBand)
+  const latestNearestBand = nearestMultiple(latest.pe)
+  const latestBandLevel = latest.eps * latestNearestBand
+  const latestBandDelta = latest.spx - latestBandLevel
+  const latestBandDeltaPercent = (latestBandDelta / latestBandLevel) * 100
+  const latestStatusLabel = valuationStatus(latestBandDelta, latestNearestBand)
+  const latestStatusTone = latestBandDelta >= 0 ? 'rich' : 'cheap'
   const peValues = visibleRows.map((row) => row.pe)
   const peMin = Math.min(...peValues)
   const peMax = Math.max(...peValues)
   const spxChange = ((latest.spx - periodStart.spx) / periodStart.spx) * 100
   const epsChange = ((latest.eps - periodStart.eps) / periodStart.eps) * 100
   const dateRangeLabel = `${toMonth(periodStart.date)} to ${toMonth(latest.date)}`
-  const bandLevels = bandMultiples.map((multiple) => ({
-    multiple,
-    value: latest.eps * multiple,
-  })).reverse()
+  const generatedDate = dataFile.generatedAt.slice(0, 10)
+  const sourceLagDays = dayDelta(dataFile.asOf, generatedDate)
+  const freshnessLabel =
+    sourceLagDays === 0 ? 'same-day market row' : `${pluralizeDay(sourceLagDays)} source lag`
+  const bandLevels = bandMultiples
+    .map((multiple, index) => {
+      const value = focusedRow.eps * multiple
 
-  const handlePeriodChange = (nextPeriod: string) => {
-    setPeriodId(nextPeriod)
-  }
+      return {
+        multiple,
+        value,
+        color: COLORS.bands[index],
+        deltaPercent: ((value - focusedRow.spx) / focusedRow.spx) * 100,
+      }
+    })
+    .reverse()
+  const railMin = Math.min(focusedRow.spx, focusBandLevel)
+  const railMax = Math.max(focusedRow.spx, focusBandLevel)
+  const railPadding = Math.max((railMax - railMin) * 0.18, focusedRow.spx * 0.01)
+  const railDomainMin = railMin - railPadding
+  const railDomainMax = railMax + railPadding
+  const spotPosition = railPosition(focusedRow.spx, railDomainMin, railDomainMax)
+  const bandPosition = railPosition(focusBandLevel, railDomainMin, railDomainMax)
+  const railLeft = Math.min(spotPosition, bandPosition)
+  const railWidth = Math.abs(spotPosition - bandPosition)
+
+  const handleFocusDate = useCallback(
+    (date: string) => {
+      if (!rowByDate.has(date)) {
+        return
+      }
+
+      setFocusDate((current) => (current === date ? current : date))
+    },
+    [rowByDate],
+  )
+
+  const handleResetFocus = useCallback(() => {
+    setFocusDate(null)
+    setRequestedActiveBand(null)
+  }, [])
 
   return (
     <main className="app-shell">
-      <header className="market-header" aria-labelledby="page-title">
-        <div className="header-top">
-          <div className="title-block">
-            <div className="ticker-line">
+      <section className="chart-stage" aria-labelledby="page-title">
+        <div className="desk-toolbar">
+          <div className="desk-identity">
+            <div className="eyebrow-row">
               <span className="ticker-pill">SPX</span>
-              <span className="as-of">As of {toDisplayDate(latest.date)}</span>
+              <span>Forward earnings valuation</span>
             </div>
-            <h1 id="page-title">Forward P/E Bands</h1>
+            <h1 id="page-title">SPX Valuation Desk</h1>
           </div>
-          <div className={activeBandDelta >= 0 ? 'status-pill is-rich' : 'status-pill is-cheap'}>
-            {statusLabel}
+
+          <div className="toolbar-cluster">
+            <div className={`latest-inline is-${latestStatusTone}`} aria-label="Latest valuation read">
+              <span>Latest</span>
+              <strong>
+                {latestStatusLabel} by {formatPercent(latestBandDeltaPercent)}
+              </strong>
+              <small>{toDisplayDate(latest.date)}</small>
+            </div>
+
+            <div className="period-buttons" role="group" aria-label="Chart time period">
+              {PERIODS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={periodId === option.id}
+                  className={periodId === option.id ? 'is-active' : ''}
+                  onClick={() => setPeriodId(option.id)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="toolbar-meta">
+              <span>{dateRangeLabel}</span>
+              <button
+                type="button"
+                className="reset-focus"
+                onClick={handleResetFocus}
+                disabled={isLatestFocus && !hasDormantFocus && requestedActiveBand === null}
+                title="Return to latest row"
+              >
+                <RefreshCcw aria-hidden="true" size={15} />
+                Latest
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="metric-strip" aria-label="Latest valuation stats">
+        <div className="chart-wrap">
+          <ValuationChart
+            rows={rows}
+            period={period}
+            activeBand={activeBand}
+            bandMultiples={bandMultiples}
+            focusDate={focusedRow.date}
+            onFocusDate={handleFocusDate}
+          />
+        </div>
+      </section>
+
+      <section className="analysis-board" aria-label="Valuation details">
+        <aside className="focus-panel" aria-label="Focused valuation readout">
+          <div className="focus-head">
+            <div>
+              <span>{isLatestFocus ? 'Latest Focus' : 'Historical Focus'}</span>
+              <h2>{toDisplayDate(focusedRow.date)}</h2>
+            </div>
+            <strong>{formatMultiple(focusedRow.pe)}</strong>
+          </div>
+
+          <div className={`distance-panel tone-${toneForValuationGap(focusBandDelta)}`}>
+            <span>{focusStatusLabel}</span>
+            <strong>{formatPercent(focusBandDeltaPercent)}</strong>
+            <small>
+              {formatIndex(focusBandDelta)} points vs {activeBand}x fair value
+            </small>
+          </div>
+
+          <div
+            className={`valuation-rail tone-${toneForValuationGap(focusBandDelta)}`}
+            style={
+              {
+                '--spot-position': `${spotPosition}%`,
+                '--band-position': `${bandPosition}%`,
+                '--rail-left': `${railLeft}%`,
+                '--rail-width': `${railWidth}%`,
+              } as CSSProperties
+            }
+          >
+            <div className="rail-track" aria-hidden="true">
+              <span className="rail-range" />
+              <span className="rail-marker is-spot" />
+              <span className="rail-marker is-band" />
+            </div>
+            <div className="rail-labels">
+              <span>
+                <small>SPX</small>
+                {formatIndex(focusedRow.spx)}
+              </span>
+              <span>
+                <small>{activeBand}x Level</small>
+                {formatIndex(focusBandLevel)}
+              </span>
+            </div>
+          </div>
+        </aside>
+
+        <section className="metric-strip" aria-label="Latest valuation stats">
           <MetricItem
+            icon={<TrendingUp aria-hidden="true" size={18} />}
             label="S&P 500"
             value={formatIndex(latest.spx)}
             detail={`${formatPercent(spxChange)} in view`}
             tone={toneForValue(spxChange)}
           />
           <MetricItem
+            icon={<Gauge aria-hidden="true" size={18} />}
             label="Forward P/E"
             value={formatMultiple(latest.pe)}
-            detail={`${decimalFormatter.format(peMin)}-${decimalFormatter.format(peMax)}x range`}
+            detail={`${decimalFormatter.format(peMin)}-${decimalFormatter.format(peMax)}x in view`}
           />
           <MetricItem
+            icon={<Target aria-hidden="true" size={18} />}
             label="NTM EPS"
             value={formatMoney(latest.eps)}
             detail={`${formatPercent(epsChange)} in view`}
             tone={toneForValue(epsChange)}
           />
           <MetricItem
-            label={`${activeBand}x level`}
-            value={formatIndex(activeBandLevel)}
-            detail={`${formatIndex(activeBandDelta)} / ${formatPercent(activeBandDeltaPercent)}`}
-            tone={toneForValue(activeBandDelta)}
+            icon={<CalendarDays aria-hidden="true" size={18} />}
+            label="Data Freshness"
+            value={toDisplayDate(dataFile.asOf)}
+            detail={freshnessLabel}
           />
-        </div>
-      </header>
+        </section>
 
-      <section className="chart-stage" aria-label="Valuation chart">
-        <div className="period-bar">
-          <div className="period-buttons" role="group" aria-label="Chart time period">
-            {PERIODS.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                aria-pressed={periodId === option.id}
-                className={periodId === option.id ? 'is-active' : ''}
-                onClick={() => handlePeriodChange(option.id)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <div className="range-note">{dateRangeLabel}</div>
-        </div>
-
-        <div className="workspace-grid">
-          <div className="chart-wrap">
-            <ValuationChart
-              rows={rows}
-              period={period}
-              activeBand={activeBand}
-              bandMultiples={bandMultiples}
-            />
-          </div>
-
-          <aside className="view-summary" aria-label="Visible range summary">
-            <div className="summary-head">
-              <div>
-                <span>In View</span>
-                <h2>{dateRangeLabel}</h2>
-              </div>
-              <small>{visibleRows.length} rows</small>
-            </div>
-
-            <div className="band-distance">
-              <span>{statusLabel}</span>
-              <strong>{formatPercent(activeBandDeltaPercent)}</strong>
-              <small>{formatIndex(activeBandDelta)} points vs {activeBand}x</small>
-            </div>
-
-            <div className="summary-grid">
-              <Readout label="Start SPX" value={formatIndex(periodStart.spx)} />
-              <Readout label="End SPX" value={formatIndex(latest.spx)} />
-              <Readout label="Start EPS" value={formatMoney(periodStart.eps)} />
-              <Readout label="End EPS" value={formatMoney(latest.eps)} />
-              <Readout label="Low P/E" value={formatMultiple(peMin)} />
-              <Readout label="High P/E" value={formatMultiple(peMax)} />
-            </div>
-          </aside>
+        <div className="summary-grid">
+          <Readout label="Start SPX" value={formatIndex(periodStart.spx)} />
+          <Readout label="End SPX" value={formatIndex(latest.spx)} />
+          <Readout label="Focus EPS" value={formatMoney(focusedRow.eps)} />
+          <Readout label="Focus P/E" value={formatMultiple(focusedRow.pe)} />
+          <Readout label="Low P/E" value={formatMultiple(peMin)} />
+          <Readout label="High P/E" value={formatMultiple(peMax)} />
         </div>
 
         <div className="band-ladder" aria-label="Valuation band levels">
           <div className="ladder-title">
             <BarChart3 aria-hidden="true" size={17} />
-            Latest EPS Band Levels
+            Focus Band Levels
           </div>
           <div className="ladder-buttons">
-            {bandLevels.map(({ multiple, value }) => (
+            {bandLevels.map(({ multiple, value, deltaPercent, color }) => (
               <button
                 key={multiple}
                 type="button"
                 aria-pressed={activeBand === multiple}
                 className={activeBand === multiple ? 'is-active' : ''}
-                style={{ '--band-color': colorForMultiple(multiple, bandMultiples) } as CSSProperties}
+                style={{ '--band-color': color } as CSSProperties}
                 onClick={() => setRequestedActiveBand(multiple)}
               >
                 <span>{multiple}x</span>
                 <strong>{formatIndex(value)}</strong>
+                <small>{formatPercent(deltaPercent)}</small>
               </button>
             ))}
           </div>
@@ -567,7 +771,7 @@ function App() {
               {dataFile.source.name}
               <ExternalLink aria-hidden="true" size={14} />
             </a>
-            . Data generated {toDisplayDate(dataFile.generatedAt.slice(0, 10))}; latest market row{' '}
+            . Data generated {toDisplayDate(generatedDate)}; latest market row{' '}
             {toDisplayDate(dataFile.asOf)}.
           </p>
         </div>
@@ -578,19 +782,24 @@ function App() {
 }
 
 function MetricItem({
+  icon,
   label,
   value,
   detail,
   tone = 'neutral',
 }: {
+  icon: ReactNode
   label: string
   value: string
   detail: string
-  tone?: 'positive' | 'negative' | 'neutral'
+  tone?: Tone
 }) {
   return (
     <div className="metric-item">
-      <span>{label}</span>
+      <div className="metric-label">
+        {icon}
+        <span>{label}</span>
+      </div>
       <strong>{value}</strong>
       <small className={`tone-${tone}`}>{detail}</small>
     </div>
