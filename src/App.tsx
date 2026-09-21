@@ -5,814 +5,519 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ReactNode,
-} from 'react'
+} from "react";
 import {
-  Activity,
-  BarChart3,
-  CalendarDays,
+  ArrowUpRight,
+  ArrowLeft,
+  ArrowRight,
+  RotateCcw,
   ExternalLink,
-  Gauge,
-  RefreshCcw,
-  Target,
-  TrendingUp,
-} from 'lucide-react'
+  Activity,
+} from "lucide-react";
 import {
   ColorType,
+  CrosshairMode,
+  TickMarkType,
   LineSeries,
   createChart,
   type IChartApi,
   type ISeriesApi,
-  type LineData,
-  type MouseEventParams,
   type Time,
-} from 'lightweight-charts'
-import valuationData from './data/valuation-data.json'
-import './App.css'
+} from "lightweight-charts";
+import data from "./data/valuation-data.json";
+import {
+  ageInDays,
+  MULTIPLES,
+  PERIODS,
+  periodStart,
+  type Datum,
+  type Period,
+} from "./lib/valuation";
+import "./App.css";
 
-const BAND_SLOT_COUNT = 6
-const DEFAULT_PERIOD = '18M'
-const DAY_IN_MS = 86_400_000
+const rows: Datum[] = data.rows;
+const latest = rows[rows.length - 1];
+const rowIndex = new Map(rows.map((row, index) => [row.date, index]));
+const COLORS = [
+  "#779a9a",
+  "#78b5aa",
+  "#b6c78e",
+  "#d6b17a",
+  "#b396b8",
+  "#889fc6",
+];
+const num = (n: number, digits = 0) =>
+  n.toLocaleString("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+const pct = (n: number) => `${n >= 0 ? "+" : ""}${num(n, 1)}%`;
+const change = (a: number, b: number) => (a / b - 1) * 100;
+const dateLabel = (date: string) =>
+  new Date(`${date}T00:00:00Z`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 
-const COLORS = {
-  spx: '#8fb8ff',
-  ink: '#f2f7ff',
-  chartBg: '#071015',
-  grid: 'rgba(195, 210, 225, 0.14)',
-  bands: ['#e55365', '#f2b84b', '#20bf6b', '#ff985a', '#37c2d6', '#b7ccff'],
-  mutedBands: [
-    'rgba(229, 83, 101, 0.58)',
-    'rgba(242, 184, 75, 0.62)',
-    'rgba(32, 191, 107, 0.68)',
-    'rgba(255, 152, 90, 0.64)',
-    'rgba(55, 194, 214, 0.62)',
-    'rgba(183, 204, 255, 0.58)',
-  ],
-} as const
-
-type RawDatum = {
-  date: string
-  spx: number
-  eps: number
-  pe: number
+function timeKey(time: Time) {
+  return typeof time === "string"
+    ? time
+    : typeof time === "number"
+      ? new Date(time * 1000).toISOString().slice(0, 10)
+      : `${time.year}-${String(time.month).padStart(2, "0")}-${String(time.day).padStart(2, "0")}`;
 }
 
-type DataFile = {
-  generatedAt: string
-  asOf: string
-  rowCount: number
-  source: {
-    name: string
-    url: string
-    note: string
-  }
-  rows: RawDatum[]
-}
-
-type ChartDatum = RawDatum & {
-  time: Time
-}
-
-type PeriodOption = {
-  id: string
-  label: string
-  days?: number
-  start?: string
-}
-
-type Tone = 'positive' | 'negative' | 'neutral'
-
-const PERIODS: PeriodOption[] = [
-  { id: '1M', label: '1M', days: 31 },
-  { id: '3M', label: '3M', days: 93 },
-  { id: '6M', label: '6M', days: 186 },
-  { id: 'YTD', label: 'YTD', start: `${valuationData.asOf.slice(0, 4)}-01-01` },
-  { id: '18M', label: '2025+', start: '2025-01-01' },
-  { id: 'ALL', label: 'All' },
-]
-
-const dateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-  timeZone: 'UTC',
-})
-
-const monthFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  year: 'numeric',
-  timeZone: 'UTC',
-})
-
-const numberFormatter = new Intl.NumberFormat('en-US', {
-  maximumFractionDigits: 0,
-})
-
-const decimalFormatter = new Intl.NumberFormat('en-US', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-})
-
-const signedPercentFormatter = new Intl.NumberFormat('en-US', {
-  signDisplay: 'always',
-  minimumFractionDigits: 1,
-  maximumFractionDigits: 1,
-})
-
-function toDisplayDate(date: string) {
-  return dateFormatter.format(new Date(`${date}T00:00:00Z`))
-}
-
-function toMonth(date: string) {
-  return monthFormatter.format(new Date(`${date}T00:00:00Z`))
-}
-
-function formatIndex(value: number) {
-  return numberFormatter.format(Math.round(value))
-}
-
-function formatMoney(value: number) {
-  return `$${decimalFormatter.format(value)}`
-}
-
-function formatPercent(value: number) {
-  return `${signedPercentFormatter.format(value)}%`
-}
-
-function formatMultiple(value: number) {
-  return `${decimalFormatter.format(value)}x`
-}
-
-function pluralizeDay(days: number) {
-  return `${days} day${days === 1 ? '' : 's'}`
-}
-
-function dayDelta(fromDate: string, toDate: string) {
-  const from = new Date(`${fromDate}T00:00:00Z`).getTime()
-  const to = new Date(`${toDate}T00:00:00Z`).getTime()
-
-  return Math.max(0, Math.round((to - from) / DAY_IN_MS))
-}
-
-function timeToDate(time: Time | undefined) {
-  if (!time) {
-    return null
-  }
-
-  if (typeof time === 'string') {
-    return time
-  }
-
-  if (typeof time === 'number') {
-    return new Date(time * 1000).toISOString().slice(0, 10)
-  }
-
-  return [
-    time.year,
-    String(time.month).padStart(2, '0'),
-    String(time.day).padStart(2, '0'),
-  ].join('-')
-}
-
-function asLineData(rows: ChartDatum[], valueForRow: (row: ChartDatum) => number) {
-  return rows.map((row) => ({ time: row.time, value: valueForRow(row) }))
-}
-
-function bandDataForMultiple(rows: ChartDatum[], multiple: number) {
-  return asLineData(rows, (row) => row.eps * multiple) as LineData[]
-}
-
-function getPeriodStartIndex(rows: ChartDatum[], period: PeriodOption) {
-  if (!period.days && !period.start) {
-    return 0
-  }
-
-  const latest = rows.at(-1)
-
-  if (!latest) {
-    return 0
-  }
-
-  const targetDate = period.start
-    ? new Date(`${period.start}T00:00:00Z`)
-    : new Date(new Date(`${latest.date}T00:00:00Z`).getTime() - Number(period.days) * DAY_IN_MS)
-
-  const target = targetDate.toISOString().slice(0, 10)
-  const index = rows.findIndex((row) => row.date >= target)
-
-  return index === -1 ? 0 : index
-}
-
-function nearestMultiple(pe: number) {
-  return Math.max(1, Math.round(pe))
-}
-
-function adaptiveMultiples(pe: number) {
-  const nearest = nearestMultiple(pe)
-  const start = Math.max(1, nearest - 3)
-
-  return Array.from({ length: BAND_SLOT_COUNT }, (_, index) => start + index)
-}
-
-function colorForSlot(index: number, active = false) {
-  const safeIndex = Math.max(0, Math.min(index, COLORS.bands.length - 1))
-
-  return active ? COLORS.bands[safeIndex] : COLORS.mutedBands[safeIndex]
-}
-
-function lineWidthForBand(multiple: number, activeBand: number): 1 | 2 | 3 {
-  if (multiple === activeBand) {
-    return 3
-  }
-
-  if (Math.abs(multiple - activeBand) === 1) {
-    return 2
-  }
-
-  return 1
-}
-
-function normalizeRows(data: DataFile) {
-  return data.rows.map((row) => ({
-    ...row,
-    time: row.date as Time,
-  }))
-}
-
-function toneForValue(value: number): Tone {
-  if (value > 0) {
-    return 'positive'
-  }
-
-  if (value < 0) {
-    return 'negative'
-  }
-
-  return 'neutral'
-}
-
-function toneForValuationGap(delta: number): Tone {
-  if (delta > 0) {
-    return 'negative'
-  }
-
-  if (delta < 0) {
-    return 'positive'
-  }
-
-  return 'neutral'
-}
-
-function valuationStatus(delta: number, multiple: number) {
-  return `${delta >= 0 ? 'Above' : 'Below'} ${multiple}x`
-}
-
-function railPosition(value: number, min: number, max: number) {
-  if (max === min) {
-    return 50
-  }
-
-  return Math.min(100, Math.max(0, ((value - min) / (max - min)) * 100))
-}
-
-type ValuationChartProps = {
-  rows: ChartDatum[]
-  period: PeriodOption
-  activeBand: number
-  bandMultiples: number[]
-  focusDate: string
-  onFocusDate: (date: string) => void
-}
-
-function ValuationChart({
-  rows,
-  period,
+function Chart({
+  start,
   activeBand,
-  bandMultiples,
-  focusDate,
-  onFocusDate,
-}: ValuationChartProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const chartRef = useRef<IChartApi | null>(null)
-  const spxSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
-  const bandSeriesRef = useRef<ISeriesApi<'Line'>[]>([])
-  const bandMultiplesKey = bandMultiples.join(',')
+  selectedIndex,
+  onInspect,
+}: {
+  start: number;
+  activeBand: number;
+  selectedIndex: number | null;
+  onInspect: (index: number | null) => void;
+}) {
+  const container = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const bandsRef = useRef<ISeriesApi<"Line">[]>([]);
+  const spotRef = useRef<ISeriesApi<"Line"> | null>(null);
 
+  // Create the canvas once. Inspection and scenario selection never replace it.
   useEffect(() => {
-    const container = containerRef.current
-
-    if (!container) {
-      return undefined
-    }
-
-    const compact = container.clientWidth < 620
-    const chart = createChart(container, {
-      width: container.clientWidth,
-      height: container.clientHeight,
-      autoSize: false,
+    if (!container.current) return;
+    const chart = createChart(container.current, {
+      autoSize: true,
       layout: {
-        background: { type: ColorType.Solid, color: COLORS.chartBg },
-        textColor: '#a9b8c8',
-        fontSize: compact ? 11 : 12,
-        fontFamily:
-          'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        background: { type: ColorType.Solid, color: "#111d25" },
+        textColor: "#94a5af",
+        fontFamily: "Inter, system-ui, sans-serif",
+        fontSize: 11,
+        attributionLogo: true,
       },
-      grid: {
-        vertLines: { color: COLORS.grid },
-        horzLines: { color: COLORS.grid },
-      },
-      localization: {
-        priceFormatter: (price: number) => formatIndex(price),
-      },
+      grid: { vertLines: { visible: false }, horzLines: { color: "#22313a" } },
       rightPriceScale: {
-        borderColor: 'rgba(195, 210, 225, 0.18)',
-        entireTextOnly: true,
-        scaleMargins: {
-          top: 0.08,
-          bottom: 0.12,
-        },
+        borderVisible: false,
+        minimumWidth: 60,
+        scaleMargins: { top: 0.08, bottom: 0.08 },
       },
       timeScale: {
-        borderColor: 'rgba(195, 210, 225, 0.18)',
-        rightOffset: compact ? 2 : 8,
+        borderVisible: false,
         fixLeftEdge: true,
         fixRightEdge: true,
-        timeVisible: false,
+        rightOffset: 0,
+        minBarSpacing: 0.001,
+        lockVisibleTimeRangeOnResize: true,
+        tickMarkFormatter: (time: Time, type: TickMarkType) => {
+          const date = new Date(`${timeKey(time)}T00:00:00Z`);
+          if (type === TickMarkType.Year) return String(date.getUTCFullYear());
+          return date.toLocaleDateString("en-US", {
+            month: "short",
+            ...(type === TickMarkType.Month ? {} : { day: "numeric" }),
+            timeZone: "UTC",
+          });
+        },
       },
+      localization: { priceFormatter: (value: number) => num(value) },
       crosshair: {
-        vertLine: {
-          visible: true,
-          labelVisible: true,
-          color: 'rgba(242, 247, 255, 0.32)',
-          labelBackgroundColor: '#17212b',
-        },
-        horzLine: {
-          visible: true,
-          labelVisible: true,
-          color: 'rgba(242, 247, 255, 0.18)',
-          labelBackgroundColor: '#17212b',
-        },
+        mode: CrosshairMode.Normal,
+        horzLine: { visible: false, labelVisible: false },
+        vertLine: { color: "#72858e", labelBackgroundColor: "#30434c" },
       },
-      handleScroll: {
-        horzTouchDrag: false,
-        mouseWheel: false,
-        pressedMouseMove: false,
-        vertTouchDrag: false,
-      },
-      handleScale: {
-        axisDoubleClickReset: false,
-        axisPressedMouseMove: false,
-        mouseWheel: false,
-        pinch: false,
-      },
-    })
-
-    chartRef.current = chart
-    bandSeriesRef.current = []
-
-    bandMultiples.forEach((multiple, index) => {
+      handleScroll: false,
+      handleScale: false,
+    });
+    chartRef.current = chart;
+    bandsRef.current = MULTIPLES.map((multiple, i) => {
       const series = chart.addSeries(LineSeries, {
-        color: colorForSlot(index, multiple === activeBand),
-        crosshairMarkerVisible: false,
+        color: COLORS[i],
+        lineWidth: 1,
         lastValueVisible: false,
-        lineWidth: lineWidthForBand(multiple, activeBand),
         priceLineVisible: false,
-        title: '',
-      })
-
-      series.setData(bandDataForMultiple(rows, multiple))
-      bandSeriesRef.current[index] = series
-    })
-
-    const spxLineWidth: 3 | 4 = compact ? 3 : 4
-    const spxSeries = chart.addSeries(LineSeries, {
-      color: COLORS.spx,
-      crosshairMarkerVisible: true,
-      crosshairMarkerRadius: compact ? 4 : 5,
+        crosshairMarkerVisible: false,
+      });
+      series.setData(
+        rows.map((row) => ({
+          time: row.date as Time,
+          value: row.eps * multiple,
+        })),
+      );
+      return series;
+    });
+    const spot = chart.addSeries(LineSeries, {
+      color: "#edf3ef",
+      lineWidth: 2,
       lastValueVisible: false,
-      lineWidth: spxLineWidth,
       priceLineVisible: false,
-      title: '',
-    })
-
-    spxSeries.setData(asLineData(rows, (row) => row.spx) as LineData[])
-    spxSeriesRef.current = spxSeries
-
-    const handleCrosshairMove = (param: MouseEventParams<Time>) => {
-      const date = timeToDate(param.time)
-
-      if (date) {
-        onFocusDate(date)
-      }
-    }
-
-    chart.subscribeCrosshairMove(handleCrosshairMove)
-
-    const resizeObserver = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect
-      const isCompact = width < 620
-      const nextLineWidth: 3 | 4 = isCompact ? 3 : 4
-
-      chart.applyOptions({
-        width: Math.max(320, Math.floor(width)),
-        height: Math.max(300, Math.floor(height)),
-        layout: {
-          fontSize: isCompact ? 11 : 12,
-        },
-        timeScale: {
-          rightOffset: isCompact ? 2 : 8,
-        },
-      })
-
-      spxSeriesRef.current?.applyOptions({
-        lineWidth: nextLineWidth,
-        crosshairMarkerRadius: isCompact ? 4 : 5,
-      })
-    })
-
-    resizeObserver.observe(container)
-
+      crosshairMarkerRadius: 4,
+    });
+    spot.setData(
+      rows.map((row) => ({ time: row.date as Time, value: row.spx })),
+    );
+    spotRef.current = spot;
+    const inspect = (event: { time?: Time }) => {
+      const key = event.time ? timeKey(event.time) : null;
+      onInspect(key ? (rowIndex.get(key) ?? null) : null);
+    };
+    chart.subscribeCrosshairMove(inspect);
+    const describeRange = (range: { from: Time; to: Time } | null) => {
+      if (range)
+        container.current?.setAttribute(
+          "aria-description",
+          `Visible dates: ${timeKey(range.from)} to ${timeKey(range.to)}`,
+        );
+    };
+    chart.timeScale().subscribeVisibleTimeRangeChange(describeRange);
     return () => {
-      chart.unsubscribeCrosshairMove(handleCrosshairMove)
-      resizeObserver.disconnect()
-      chart.remove()
-      chartRef.current = null
-      spxSeriesRef.current = null
-      bandSeriesRef.current = []
-    }
-  }, [activeBand, bandMultiples, bandMultiplesKey, onFocusDate, rows])
+      chart.unsubscribeCrosshairMove(inspect);
+      chart.timeScale().unsubscribeVisibleTimeRangeChange(describeRange);
+      chart.remove();
+      chartRef.current = null;
+      spotRef.current = null;
+      bandsRef.current = [];
+    };
+  }, [onInspect]);
 
   useEffect(() => {
-    const chart = chartRef.current
-    const latest = rows.at(-1)
-
-    if (!chart || !latest) {
-      return
-    }
-
-    const fromIndex = getPeriodStartIndex(rows, period)
-    chart.timeScale().setVisibleRange({
-      from: rows[fromIndex].time,
-      to: latest.time,
-    })
-  }, [period, rows])
+    chartRef.current?.timeScale().setVisibleRange({
+      from: rows[start].date as Time,
+      to: latest.date as Time,
+    });
+  }, [start]);
 
   useEffect(() => {
-    bandSeriesRef.current.forEach((series, index) => {
-      const multiple = bandMultiples[index]
-
-      if (!multiple) {
-        return
-      }
-
+    bandsRef.current.forEach((series, i) =>
       series.applyOptions({
-        color: colorForSlot(index, multiple === activeBand),
-        lineWidth: lineWidthForBand(multiple, activeBand),
-        title: '',
-      })
-    })
-  }, [activeBand, bandMultiples, bandMultiplesKey])
+        color: `${COLORS[i]}${MULTIPLES[i] === activeBand ? "ff" : "88"}`,
+        lineWidth: MULTIPLES[i] === activeBand ? 2 : 1,
+      }),
+    );
+  }, [activeBand]);
 
   useEffect(() => {
-    const chart = chartRef.current
-    const series = spxSeriesRef.current
-    const focused = rows.find((row) => row.date === focusDate)
-
-    if (!chart || !series || !focused) {
-      return
+    if (selectedIndex === null) chartRef.current?.clearCrosshairPosition();
+    else if (spotRef.current) {
+      const row = rows[selectedIndex];
+      chartRef.current?.setCrosshairPosition(
+        row.spx,
+        row.date as Time,
+        spotRef.current,
+      );
     }
-
-    chart.setCrosshairPosition(focused.spx, focused.time, series)
-  }, [focusDate, rows])
+  }, [selectedIndex]);
 
   return (
-    <div className="chart-shell">
-      <div className="chart-legend" aria-label="Displayed valuation multiples">
-        <span className="legend-item legend-spx">
-          <span style={{ '--legend-color': COLORS.spx } as CSSProperties} />
-          S&P 500
-        </span>
-        {bandMultiples.map((multiple, index) => (
-          <span
-            key={multiple}
-            className={activeBand === multiple ? 'legend-item is-active' : 'legend-item'}
-          >
-            <span style={{ '--legend-color': COLORS.bands[index] } as CSSProperties} />
-            {multiple}x
-          </span>
-        ))}
-      </div>
-      <div ref={containerRef} className="chart-canvas" aria-label="S&P 500 valuation bands chart" />
-    </div>
-  )
+    <div
+      className="chart-canvas"
+      ref={container}
+      role="img"
+      aria-label="S&P 500 index and forward earnings valuation bands. Use the date slider below to inspect values without a pointer."
+    />
+  );
 }
 
 function App() {
-  const dataFile = valuationData as DataFile
-  const rows = useMemo(() => normalizeRows(dataFile), [dataFile])
-  const rowByDate = useMemo(() => new Map(rows.map((row) => [row.date, row])), [rows])
-  const latest = rows.at(-1) ?? rows[0]
-  const [periodId, setPeriodId] = useState(DEFAULT_PERIOD)
-  const [focusDate, setFocusDate] = useState<string | null>(null)
-  const [requestedActiveBand, setRequestedActiveBand] = useState<number | null>(null)
-  const period = PERIODS.find((option) => option.id === periodId) ?? PERIODS[0]
-  const visibleStartIndex = getPeriodStartIndex(rows, period)
-  const visibleRows = rows.slice(visibleStartIndex)
-  const periodStart = visibleRows[0] ?? latest
-  const focusCandidate = focusDate ? rowByDate.get(focusDate) : null
-  const focusedRow = focusCandidate && focusCandidate.date >= periodStart.date ? focusCandidate : latest
-  const isLatestFocus = focusedRow.date === latest.date
-  const hasDormantFocus = focusDate !== null && focusDate !== latest.date
-  const focusNearestBand = nearestMultiple(focusedRow.pe)
-  const bandMultiples = useMemo(() => adaptiveMultiples(focusNearestBand), [focusNearestBand])
-  const activeBand =
-    requestedActiveBand !== null && bandMultiples.includes(requestedActiveBand)
-      ? requestedActiveBand
-      : focusNearestBand
-  const focusBandLevel = focusedRow.eps * activeBand
-  const focusBandDelta = focusedRow.spx - focusBandLevel
-  const focusBandDeltaPercent = (focusBandDelta / focusBandLevel) * 100
-  const focusStatusLabel = valuationStatus(focusBandDelta, activeBand)
-  const latestNearestBand = nearestMultiple(latest.pe)
-  const latestBandLevel = latest.eps * latestNearestBand
-  const latestBandDelta = latest.spx - latestBandLevel
-  const latestBandDeltaPercent = (latestBandDelta / latestBandLevel) * 100
-  const latestStatusLabel = valuationStatus(latestBandDelta, latestNearestBand)
-  const latestStatusTone = latestBandDelta >= 0 ? 'rich' : 'cheap'
-  const peValues = visibleRows.map((row) => row.pe)
-  const peMin = Math.min(...peValues)
-  const peMax = Math.max(...peValues)
-  const spxChange = ((latest.spx - periodStart.spx) / periodStart.spx) * 100
-  const epsChange = ((latest.eps - periodStart.eps) / periodStart.eps) * 100
-  const dateRangeLabel = `${toMonth(periodStart.date)} to ${toMonth(latest.date)}`
-  const generatedDate = dataFile.generatedAt.slice(0, 10)
-  const sourceLagDays = dayDelta(dataFile.asOf, generatedDate)
-  const freshnessLabel =
-    sourceLagDays === 0 ? 'same-day market row' : `${pluralizeDay(sourceLagDays)} source lag`
-  const bandLevels = bandMultiples
-    .map((multiple, index) => {
-      const value = focusedRow.eps * multiple
-
-      return {
-        multiple,
-        value,
-        color: COLORS.bands[index],
-        deltaPercent: ((value - focusedRow.spx) / focusedRow.spx) * 100,
-      }
-    })
-    .reverse()
-  const railMin = Math.min(focusedRow.spx, focusBandLevel)
-  const railMax = Math.max(focusedRow.spx, focusBandLevel)
-  const railPadding = Math.max((railMax - railMin) * 0.18, focusedRow.spx * 0.01)
-  const railDomainMin = railMin - railPadding
-  const railDomainMax = railMax + railPadding
-  const spotPosition = railPosition(focusedRow.spx, railDomainMin, railDomainMax)
-  const bandPosition = railPosition(focusBandLevel, railDomainMin, railDomainMax)
-  const railLeft = Math.min(spotPosition, bandPosition)
-  const railWidth = Math.abs(spotPosition - bandPosition)
-
-  const handleFocusDate = useCallback(
-    (date: string) => {
-      if (!rowByDate.has(date)) {
-        return
-      }
-
-      setFocusDate((current) => (current === date ? current : date))
-    },
-    [rowByDate],
-  )
-
-  const handleResetFocus = useCallback(() => {
-    setFocusDate(null)
-    setRequestedActiveBand(null)
-  }, [])
+  const [period, setPeriod] = useState<Period>("1Y");
+  const [activeBand, setActiveBand] = useState(20);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const start = useMemo(() => periodStart(rows, period), [period]);
+  const focusIndex = Math.max(
+    start,
+    hoverIndex ?? selectedIndex ?? rows.length - 1,
+  );
+  const focused = rows[focusIndex];
+  const first = rows[start];
+  const age = ageInDays(latest.date, now);
+  const stale = age > 4;
+  const level = focused.eps * activeBand;
+  const gap = change(focused.spx, level);
+  const inspect = useCallback(
+    (index: number | null) => setHoverIndex(index),
+    [],
+  );
+  const rangeStats = useMemo(() => {
+    const values = rows.slice(start).map((row) => row.pe);
+    return { min: Math.min(...values), max: Math.max(...values) };
+  }, [start]);
+  const selectDate = (index: number) => {
+    setHoverIndex(null);
+    setSelectedIndex(index);
+  };
 
   return (
-    <main className="app-shell">
-      <section className="chart-stage" aria-labelledby="page-title">
-        <div className="desk-toolbar">
-          <div className="desk-identity">
-            <div className="eyebrow-row">
-              <span className="ticker-pill">SPX</span>
-              <span>Forward earnings valuation</span>
+    <main className="desk">
+      <header className="masthead">
+        <a href="./" className="brand" aria-label="SPX valuation desk home">
+          <span className="brand-mark">
+            <Activity size={21} />
+          </span>
+          <span>
+            MARKET / <b>RESEARCH</b>
+          </span>
+        </a>
+        <div className={`data-status ${stale ? "is-stale" : ""}`}>
+          <span />
+          {stale
+            ? `Data delayed · ${age} days old`
+            : `Market data · ${dateLabel(latest.date)}`}
+        </div>
+      </header>
+
+      <section className="intro">
+        <div>
+          <p className="eyebrow">S&P 500 · FORWARD EARNINGS</p>
+          <h1>S&P 500 valuation</h1>
+          <p className="intro-copy">
+            Price in the context of forward earnings.
+          </p>
+        </div>
+        <span className="instrument">
+          SPX <ArrowUpRight size={19} />
+        </span>
+      </section>
+
+      {stale && (
+        <div className="stale-notice" role="status">
+          The latest available market row is {dateLabel(latest.date)}. This
+          snapshot is {age} calendar days old; the refresh or source may be
+          delayed.
+        </div>
+      )}
+
+      <section className="metrics" aria-label="Latest market snapshot">
+        <div className="metric">
+          <span>S&P 500 INDEX</span>
+          <strong>{num(latest.spx, 2)}</strong>
+          <small
+            className={
+              change(latest.spx, first.spx) >= 0 ? "positive" : "negative"
+            }
+          >
+            {pct(change(latest.spx, first.spx))}
+            <em> over selected range</em>
+          </small>
+        </div>
+        <div className="metric">
+          <span>FORWARD P/E</span>
+          <strong>
+            {num(latest.pe, 2)}
+            <i>×</i>
+          </strong>
+          <small>
+            {num(rangeStats.min, 1)}–{num(rangeStats.max, 1)}×<em> range</em>
+          </small>
+        </div>
+        <div className="metric">
+          <span>NTM EPS</span>
+          <strong>
+            <i>$</i>
+            {num(latest.eps, 2)}
+          </strong>
+          <small
+            className={
+              change(latest.eps, first.eps) >= 0 ? "positive" : "negative"
+            }
+          >
+            {pct(change(latest.eps, first.eps))}
+            <em> over selected range</em>
+          </small>
+        </div>
+        <div className="metric snapshot">
+          <span>LATEST OBSERVATION</span>
+          <strong>{dateLabel(latest.date)}</strong>
+          <small>
+            {age === 0 ? "Today" : `${age} calendar days ago`}
+            <em> · daily data</em>
+          </small>
+        </div>
+      </section>
+
+      <section className="workspace" aria-label="Valuation explorer">
+        <div className="plot-panel">
+          <div className="chart-heading">
+            <div>
+              <h2>Price & valuation bands</h2>
+              <p>Index level at a given forward P/E</p>
             </div>
-            <h1 id="page-title">SPX Valuation Desk</h1>
+            <span className="chart-unit">INDEX POINTS</span>
           </div>
-
-          <div className="toolbar-cluster">
-            <div className={`latest-inline is-${latestStatusTone}`} aria-label="Latest valuation read">
-              <span>Latest</span>
-              <strong>
-                {latestStatusLabel} by {formatPercent(latestBandDeltaPercent)}
-              </strong>
-              <small>{toDisplayDate(latest.date)}</small>
-            </div>
-
-            <div className="period-buttons" role="group" aria-label="Chart time period">
+          <div className="chart-toolbar">
+            <div className="periods" role="group" aria-label="Chart timeframe">
               {PERIODS.map((option) => (
                 <button
-                  key={option.id}
-                  type="button"
-                  aria-pressed={periodId === option.id}
-                  className={periodId === option.id ? 'is-active' : ''}
-                  onClick={() => setPeriodId(option.id)}
+                  key={option}
+                  aria-pressed={period === option}
+                  onClick={() => {
+                    setPeriod(option);
+                    setSelectedIndex(null);
+                    setHoverIndex(null);
+                  }}
                 >
-                  {option.label}
+                  {option === "ALL" ? "All" : option}
                 </button>
               ))}
             </div>
-
-            <div className="toolbar-meta">
-              <span>{dateRangeLabel}</span>
-              <button
-                type="button"
-                className="reset-focus"
-                onClick={handleResetFocus}
-                disabled={isLatestFocus && !hasDormantFocus && requestedActiveBand === null}
-                title="Return to latest row"
-              >
-                <RefreshCcw aria-hidden="true" size={15} />
-                Latest
-              </button>
-            </div>
+            <span className="range-label">
+              {dateLabel(first.date)} — {dateLabel(latest.date)}
+            </span>
           </div>
-        </div>
-
-        <div className="chart-wrap">
-          <ValuationChart
-            rows={rows}
-            period={period}
-            activeBand={activeBand}
-            bandMultiples={bandMultiples}
-            focusDate={focusedRow.date}
-            onFocusDate={handleFocusDate}
-          />
-        </div>
-      </section>
-
-      <section className="analysis-board" aria-label="Valuation details">
-        <aside className="focus-panel" aria-label="Focused valuation readout">
-          <div className="focus-head">
-            <div>
-              <span>{isLatestFocus ? 'Latest Focus' : 'Historical Focus'}</span>
-              <h2>{toDisplayDate(focusedRow.date)}</h2>
-            </div>
-            <strong>{formatMultiple(focusedRow.pe)}</strong>
-          </div>
-
-          <div className={`distance-panel tone-${toneForValuationGap(focusBandDelta)}`}>
-            <span>{focusStatusLabel}</span>
-            <strong>{formatPercent(focusBandDeltaPercent)}</strong>
-            <small>
-              {formatIndex(focusBandDelta)} points vs {activeBand}x fair value
-            </small>
-          </div>
-
-          <div
-            className={`valuation-rail tone-${toneForValuationGap(focusBandDelta)}`}
-            style={
-              {
-                '--spot-position': `${spotPosition}%`,
-                '--band-position': `${bandPosition}%`,
-                '--rail-left': `${railLeft}%`,
-                '--rail-width': `${railWidth}%`,
-              } as CSSProperties
-            }
-          >
-            <div className="rail-track" aria-hidden="true">
-              <span className="rail-range" />
-              <span className="rail-marker is-spot" />
-              <span className="rail-marker is-band" />
-            </div>
-            <div className="rail-labels">
-              <span>
-                <small>SPX</small>
-                {formatIndex(focusedRow.spx)}
-              </span>
-              <span>
-                <small>{activeBand}x Level</small>
-                {formatIndex(focusBandLevel)}
-              </span>
-            </div>
-          </div>
-        </aside>
-
-        <section className="metric-strip" aria-label="Latest valuation stats">
-          <MetricItem
-            icon={<TrendingUp aria-hidden="true" size={18} />}
-            label="S&P 500"
-            value={formatIndex(latest.spx)}
-            detail={`${formatPercent(spxChange)} in view`}
-            tone={toneForValue(spxChange)}
-          />
-          <MetricItem
-            icon={<Gauge aria-hidden="true" size={18} />}
-            label="Forward P/E"
-            value={formatMultiple(latest.pe)}
-            detail={`${decimalFormatter.format(peMin)}-${decimalFormatter.format(peMax)}x in view`}
-          />
-          <MetricItem
-            icon={<Target aria-hidden="true" size={18} />}
-            label="NTM EPS"
-            value={formatMoney(latest.eps)}
-            detail={`${formatPercent(epsChange)} in view`}
-            tone={toneForValue(epsChange)}
-          />
-          <MetricItem
-            icon={<CalendarDays aria-hidden="true" size={18} />}
-            label="Data Freshness"
-            value={toDisplayDate(dataFile.asOf)}
-            detail={freshnessLabel}
-          />
-        </section>
-
-        <div className="summary-grid">
-          <Readout label="Start SPX" value={formatIndex(periodStart.spx)} />
-          <Readout label="End SPX" value={formatIndex(latest.spx)} />
-          <Readout label="Focus EPS" value={formatMoney(focusedRow.eps)} />
-          <Readout label="Focus P/E" value={formatMultiple(focusedRow.pe)} />
-          <Readout label="Low P/E" value={formatMultiple(peMin)} />
-          <Readout label="High P/E" value={formatMultiple(peMax)} />
-        </div>
-
-        <div className="band-ladder" aria-label="Valuation band levels">
-          <div className="ladder-title">
-            <BarChart3 aria-hidden="true" size={17} />
-            Focus Band Levels
-          </div>
-          <div className="ladder-buttons">
-            {bandLevels.map(({ multiple, value, deltaPercent, color }) => (
+          <div className="legend">
+            <span className="spot-key">
+              <i />
+              S&P 500
+            </span>
+            {MULTIPLES.map((multiple, index) => (
               <button
                 key={multiple}
-                type="button"
+                style={{ "--band": COLORS[index] } as CSSProperties}
+                aria-label={`Highlight ${multiple} times earnings`}
                 aria-pressed={activeBand === multiple}
-                className={activeBand === multiple ? 'is-active' : ''}
-                style={{ '--band-color': color } as CSSProperties}
-                onClick={() => setRequestedActiveBand(multiple)}
+                onClick={() => setActiveBand(multiple)}
               >
-                <span>{multiple}x</span>
-                <strong>{formatIndex(value)}</strong>
-                <small>{formatPercent(deltaPercent)}</small>
+                <i />
+                {multiple}×
               </button>
             ))}
           </div>
+          <Chart
+            start={start}
+            activeBand={activeBand}
+            selectedIndex={selectedIndex}
+            onInspect={inspect}
+          />
+          <div className="date-scrubber">
+            <div className="scrubber-caption">
+              <label htmlFor="date-slider">
+                Explore a date <span>· {dateLabel(focused.date)}</span>
+              </label>
+              <button
+                className="latest-button"
+                onClick={() => {
+                  setSelectedIndex(null);
+                  setHoverIndex(null);
+                }}
+                disabled={selectedIndex === null && hoverIndex === null}
+              >
+                <RotateCcw size={13} /> Latest
+              </button>
+            </div>
+            <div className="scrubber-track">
+              <button
+                aria-label="Previous observation"
+                disabled={focusIndex <= start}
+                onClick={() => selectDate(focusIndex - 1)}
+              >
+                <ArrowLeft size={15} />
+              </button>
+              <input
+                id="date-slider"
+                type="range"
+                min={start}
+                max={rows.length - 1}
+                value={focusIndex}
+                aria-valuetext={`${dateLabel(focused.date)}, S&P 500 ${num(focused.spx, 2)}, forward P/E ${num(focused.pe, 2)}`}
+                onChange={(event) => selectDate(Number(event.target.value))}
+              />
+              <button
+                aria-label="Next observation"
+                disabled={focusIndex >= rows.length - 1}
+                onClick={() => selectDate(focusIndex + 1)}
+              >
+                <ArrowRight size={15} />
+              </button>
+            </div>
+          </div>
         </div>
+
+        <aside className="inspector" aria-label="Selected date valuation">
+          <div className="inspector-heading">
+            <p className="eyebrow">
+              {focusIndex === rows.length - 1
+                ? "LATEST OBSERVATION"
+                : "HISTORICAL OBSERVATION"}
+            </p>
+            <h2>{dateLabel(focused.date)}</h2>
+            <div className="observation">
+              <span>
+                SPX <b>{num(focused.spx, 2)}</b>
+              </span>
+              <span>
+                P/E <b>{num(focused.pe, 2)}×</b>
+              </span>
+            </div>
+          </div>
+          <div className="scenario">
+            <span className="eyebrow">AT {activeBand}× FORWARD EARNINGS</span>
+            <strong>{num(level)}</strong>
+            <p>
+              The index is{" "}
+              <b>
+                {num(Math.abs(gap), 1)}% {gap >= 0 ? "above" : "below"}
+              </b>{" "}
+              this level.
+            </p>
+            <span className="scenario-formula">
+              ${num(focused.eps, 2)} EPS × {activeBand}
+            </span>
+          </div>
+          <div className="ladder">
+            <div className="ladder-heading">
+              <h3>Compare multiples</h3>
+              <span>vs. index</span>
+            </div>
+            {MULTIPLES.map((multiple, index) => (
+              <button
+                key={multiple}
+                aria-pressed={activeBand === multiple}
+                onClick={() => setActiveBand(multiple)}
+                style={{ "--band": COLORS[index] } as CSSProperties}
+              >
+                <span>
+                  <i />
+                  {multiple}×
+                </span>
+                <b>{num(focused.eps * multiple)}</b>
+                <small>
+                  {pct(change(focused.eps * multiple, focused.spx))}
+                </small>
+              </button>
+            ))}
+          </div>
+          <p className="inspector-note">
+            Each band is an earnings scenario, not a price target. Select a
+            multiple to highlight it on the chart.
+          </p>
+        </aside>
       </section>
 
-      <footer className="source-band" aria-label="Data source">
+      <footer>
         <div>
-          <div className="source-title">
-            <Activity aria-hidden="true" size={17} />
-            Data and Formula
-          </div>
+          <span className="eyebrow">READING THE CHART</span>
           <p>
-            Band level = NTM EPS estimate x selected P/E multiple. Source:{' '}
-            <a href={dataFile.source.url} target="_blank" rel="noreferrer">
-              {dataFile.source.name}
-              <ExternalLink aria-hidden="true" size={14} />
-            </a>
-            . Data generated {toDisplayDate(generatedDate)}; latest market row{' '}
-            {toDisplayDate(dataFile.asOf)}.
+            Band level = next-twelve-month EPS × P/E multiple. The white line is
+            the S&P 500 index; the colored lines hold each multiple constant as
+            earnings estimates change.
           </p>
         </div>
-        <p className="disclaimer">Educational research view only. Not investment advice.</p>
+        <div>
+          <a href={data.source.url} target="_blank" rel="noreferrer">
+            StreetStats data <ExternalLink size={12} />
+          </a>
+          <p>
+            Fetched {dateLabel(data.generatedAt.slice(0, 10))}. Market
+            observation {dateLabel(latest.date)}. Educational use only.
+          </p>
+        </div>
       </footer>
     </main>
-  )
+  );
 }
-
-function MetricItem({
-  icon,
-  label,
-  value,
-  detail,
-  tone = 'neutral',
-}: {
-  icon: ReactNode
-  label: string
-  value: string
-  detail: string
-  tone?: Tone
-}) {
-  return (
-    <div className="metric-item">
-      <div className="metric-label">
-        {icon}
-        <span>{label}</span>
-      </div>
-      <strong>{value}</strong>
-      <small className={`tone-${tone}`}>{detail}</small>
-    </div>
-  )
-}
-
-function Readout({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="readout">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  )
-}
-
-export default App
+export default App;

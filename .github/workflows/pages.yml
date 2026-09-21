@@ -22,6 +22,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -38,8 +41,25 @@ jobs:
       - name: Refresh valuation data
         run: npm run update-data
 
-      - name: Build
-        run: npm run build
+      - name: Verify
+        run: |
+          npm run test
+          npm run lint
+          npm run build
+
+      # Persist real data and fetch provenance as repository activity. Without
+      # commits, GitHub disables public-repository schedules after 60 days.
+      # GITHUB_TOKEN commits do not trigger another push deployment.
+      - name: Commit refreshed snapshot
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/data/valuation-data.json
+          if ! git diff --cached --quiet; then
+            git commit -m "data: refresh valuation snapshot"
+            git push origin HEAD:main
+          fi
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
@@ -51,6 +71,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: build
     steps:
       - name: Deploy
