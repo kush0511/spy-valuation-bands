@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-09-23T06:03:45.774Z",
-  "asOf": "2026-09-21",
-  "rowCount": 7982,
+  "generatedAt": "2026-09-24T06:13:34.785Z",
+  "asOf": "2026-09-22",
+  "rowCount": 7983,
   "fields": {
     "spx": "S&P 500 index level",
     "eps": "Next-twelve-month S&P 500 operating earnings estimate per index share",
@@ -47902,6 +47902,12 @@
     {
       "date": "2026-09-21",
       "spx": 7764.7,
+      "eps": 398.74,
+      "pe": 19.47
+    },
+    {
+      "date": "2026-09-22",
+      "spx": 7764.64,
       "eps": 398.74,
       "pe": 19.47
     }
