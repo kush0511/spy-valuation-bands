@@ -52,3 +52,7 @@ npm run dev
 ```
 
 PRs run data/range regression tests, lint and build. Main deployments run the same checks against the freshly fetched dataset.
+
+### Mobile quote display
+
+The latest quote value and timestamp sit above the historical chart, outside its canvas. No horizontal quote guide or filled price tag covers the historical series at any viewport size. Historical inspection and Latest reset continue to use their respective dated observations.

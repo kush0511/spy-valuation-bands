@@ -75,9 +75,7 @@ function Chart({
   activeBand,
   selectedIndex,
   onInspect,
-  quote,
 }: {
-  quote: Quote | null;
   start: number;
   activeBand: number;
   selectedIndex: number | null;
@@ -211,13 +209,6 @@ function Chart({
     }
   }, [selectedIndex]);
 
-  useEffect(() => {
-    const series = spotRef.current;
-    if (!series || !quote) return;
-    // A separate reference line never overwrites a historical daily observation.
-    const line = series.createPriceLine({ price: quote.price, color: "#f6cc82", lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: "Latest quote" });
-    return () => series.removePriceLine(line);
-  }, [quote]);
 
   return (
     <div
@@ -396,7 +387,7 @@ function App() {
           <div className="chart-heading">
             <div>
               <h2>Price & valuation bands</h2>
-              <p>Historical daily bands; dashed gold line = latest quote</p>
+              <p>Historical daily price and earnings scenarios</p>
             </div>
             <span className="chart-unit">INDEX POINTS</span>
           </div>
@@ -438,12 +429,15 @@ function App() {
               </button>
             ))}
           </div>
+          <div className="chart-quote" aria-label="Latest quote outside historical chart">
+            <span className="chart-quote-value">{usableQuote ? "Latest quote" : "Daily snapshot"} <strong>{num(current.spx, 2)}</strong></span>
+            <span className="chart-quote-time">{quoteTime || dateLabel(latest.date)} · {status}</span>
+          </div>
           <Chart
             start={start}
             activeBand={activeBand}
             selectedIndex={selectedIndex}
             onInspect={inspect}
-            quote={usableQuote}
           />
           <div className="date-scrubber">
             <div className="scrubber-caption">
