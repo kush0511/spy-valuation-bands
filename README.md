@@ -22,7 +22,13 @@ Band level = EPS × P/E multiple. Scenarios are not fair-value estimates or pric
 
 The updater has bounded requests and rejects malformed/duplicate dates, invalid values, future dates, source regression, undersized datasets and data more than seven days old. Failed fetches/validation leave the prior snapshot untouched and fail the workflow.
 
-GitHub Pages refreshes at 01:18 UTC Tuesday–Saturday (after US weekday trading), on pushes to main and on manual dispatch. After validation and build, the workflow commits the refreshed snapshot and its fetch timestamp to main before deploying. These real snapshot commits supply the repository activity needed to avoid GitHub's 60-day inactivity shutdown. They use the built-in GITHUB_TOKEN, so they do not recursively trigger push deployments. No PAT, empty commits or extra service is required. Main must allow the workflow's contents-write permission and data commits; branch protection can block them, in which case the job fails visibly. Sustained source/workflow failures still require attention.
+The latest-price overlay is separate from historical rows. `scripts/update-quote.mjs` obtains Yahoo Finance's S&P 500 **index** (`^GSPC`, not SPY ETF) price and observation timestamp and publishes `public/latest-quote.json`. Current estimated forward P/E is that index price divided by the latest dated StreetStats NTM EPS. Historical charts and earnings are never rewritten by intraday quotes. The quote time and EPS date remain separate.
+
+Yahoo's no-key chart endpoint is unofficial and does not provide browser CORS access. Fetching happens in the existing GitHub Actions workflow; the browser reads a same-origin public JSON artifact, without a third-party proxy or credentials. This is **scheduled latest-available data, not a continuous live feed**. Quote refresh is requested every 20 minutes on weekdays in a conservative 13:00–22:59 UTC window covering US market hours across daylight-saving changes. GitHub scheduling, builds and CDN propagation can add delay. The displayed quote observation timestamp is authoritative, not the fetch time. Weekends retain the last session quote. Invalid, future, over-seven-day-old or earlier-than-EPS-date quotes are rejected by the UI.
+
+Daily EPS/history refresh remains at 01:18 UTC Tuesday–Saturday, plus pushes to main and manual dispatch. Intraday quote-only schedules do not repeatedly request the full StreetStats history. Quote-fetch failures recover the prior published artifact or repository seed without changing its observation time or fetched timestamp; the UI ages or rejects it. Source errors are visible in the workflow warnings. The daily EPS updater still fails visibly if its validation fails.
+
+After validation/build, daily/push/manual runs commit actual refreshed data and fetch provenance to main before deploying. Intraday runs deploy artifacts **without creating commits**. Daily data commits supply activity needed to avoid GitHub's 60-day inactivity shutdown and use the built-in GITHUB_TOKEN, so they do not recursively trigger push deployments. No PAT, API key or extra service is required. Main must allow workflow contents-write and data commits; branch protection can block them. Sustained source/workflow failures require attention.
 
 If the schedule was already disabled, reactivate it once:
 
@@ -38,6 +44,7 @@ GitHub schedules can be delayed; the displayed market observation date is author
 ```bash
 npm ci
 npm run update-data
+node scripts/update-quote.mjs
 npm test
 npm run lint
 npm run build

@@ -33,6 +33,7 @@ import {
   type Datum,
   type Period,
 } from "./lib/valuation";
+import { quoteEligible, quoteStatus, validQuote, type Quote } from "./lib/quote";
 import "./App.css";
 
 const rows: Datum[] = data.rows;
@@ -74,7 +75,9 @@ function Chart({
   activeBand,
   selectedIndex,
   onInspect,
+  quote,
 }: {
+  quote: Quote | null;
   start: number;
   activeBand: number;
   selectedIndex: number | null;
@@ -208,6 +211,14 @@ function Chart({
     }
   }, [selectedIndex]);
 
+  useEffect(() => {
+    const series = spotRef.current;
+    if (!series || !quote) return;
+    // A separate reference line never overwrites a historical daily observation.
+    const line = series.createPriceLine({ price: quote.price, color: "#f6cc82", lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: "Latest quote" });
+    return () => series.removePriceLine(line);
+  }, [quote]);
+
   return (
     <div
       className="chart-canvas"
@@ -223,6 +234,33 @@ function App() {
   const [activeBand, setActiveBand] = useState(20);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [quoteFetch, setQuoteFetch] = useState("Checking published quote…");
+  useEffect(() => {
+    let active = true;
+    let pending = false;
+    const controller = new AbortController();
+    const refresh = async () => {
+      if (pending || document.hidden) return;
+      pending = true;
+      try {
+        const response = await fetch(`${import.meta.env.BASE_URL}latest-quote.json?t=${Date.now()}`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]) });
+        if (!response.ok) throw new Error("Quote unavailable");
+        const candidate: unknown = await response.json();
+        if (!validQuote(candidate, Date.now()) || !quoteEligible(candidate, latest.date, Date.now())) throw new Error("Invalid or old quote");
+        if (active) {
+          setQuote((previous) => previous && previous.time > candidate.time ? previous : candidate);
+          setQuoteFetch("");
+        }
+      } catch {
+        if (active) setQuoteFetch("Quote refresh unavailable — using the last available observation.");
+      } finally { pending = false; }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 60000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { active = false; controller.abort(); window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+  }, []);
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = window.setInterval(() => setNow(new Date()), 60_000);
@@ -233,10 +271,16 @@ function App() {
     start,
     hoverIndex ?? selectedIndex ?? rows.length - 1,
   );
-  const focused = rows[focusIndex];
+  const usableQuote = quote && quoteEligible(quote, latest.date, now.getTime()) ? quote : null;
+  const current = usableQuote ? { ...latest, date: new Date(usableQuote.time).toISOString().slice(0, 10), spx: usableQuote.price, pe: usableQuote.price / latest.eps } : latest;
+  const inspectCurrent = hoverIndex === null && selectedIndex === null;
+  const focused = inspectCurrent ? current : rows[focusIndex];
+  const quoteTime = usableQuote ? new Date(usableQuote.time).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }) + " UTC" : null;
+  const status = usableQuote ? quoteStatus(usableQuote, now.getTime()) : "daily snapshot";
   const first = rows[start];
   const age = ageInDays(latest.date, now);
   const stale = age > 4;
+  const quoteWarning = !usableQuote || quoteFetch !== "" || status === "aged quote" || now.getTime() - Date.parse(usableQuote.fetchedAt) > 3600000;
   const level = focused.eps * activeBand;
   const gap = change(focused.spx, level);
   const inspect = useCallback(
@@ -263,11 +307,11 @@ function App() {
             MARKET / <b>RESEARCH</b>
           </span>
         </a>
-        <div className={`data-status ${stale ? "is-stale" : ""}`}>
+        <div className={`data-status ${stale || quoteWarning ? "is-stale" : ""}`}>
           <span />
           {stale
             ? `Data delayed · ${age} days old`
-            : `Market data · ${dateLabel(latest.date)}`}
+            : `${status} · ${quoteTime || dateLabel(latest.date)}`}
         </div>
       </header>
 
@@ -292,27 +336,34 @@ function App() {
         </div>
       )}
 
-      <section className="metrics" aria-label="Latest market snapshot">
+      <div className="quote-notice" role="status">
+        <b>{usableQuote ? `Yahoo SPX · ${status}` : "Daily valuation snapshot"}</b>
+        <span>{quoteTime ? `Quote ${quoteTime}. ` : ""}EPS estimate: {dateLabel(latest.date)} (StreetStats).</span>
+        {usableQuote && <span>Source fetched {new Date(usableQuote.fetchedAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC{now.getTime() - Date.parse(usableQuote.fetchedAt) > 3600000 ? " — older publication; check the quote time." : "."}</span>}
+        <span>Quote publication is scheduled every 20 minutes on US weekday trading hours; GitHub may delay runs. This is not a streaming feed.</span>
+        {quoteFetch && <span className="quote-warning">{quoteFetch}</span>}
+      </div>
+      <section className="metrics" aria-label="Latest available valuation">
         <div className="metric">
           <span>S&P 500 INDEX</span>
-          <strong>{num(latest.spx, 2)}</strong>
+          <strong>{num(current.spx, 2)}</strong>
           <small
             className={
-              change(latest.spx, first.spx) >= 0 ? "positive" : "negative"
+              change(current.spx, first.spx) >= 0 ? "positive" : "negative"
             }
           >
-            {pct(change(latest.spx, first.spx))}
+            {pct(change(current.spx, first.spx))}
             <em> over selected range</em>
           </small>
         </div>
         <div className="metric">
           <span>FORWARD P/E</span>
           <strong>
-            {num(latest.pe, 2)}
+            {num(current.pe, 2)}
             <i>×</i>
           </strong>
           <small>
-            {num(rangeStats.min, 1)}–{num(rangeStats.max, 1)}×<em> range</em>
+            {num(rangeStats.min, 1)}–{num(rangeStats.max, 1)}×<em> daily historical range</em>
           </small>
         </div>
         <div className="metric">
@@ -331,11 +382,11 @@ function App() {
           </small>
         </div>
         <div className="metric snapshot">
-          <span>LATEST OBSERVATION</span>
-          <strong>{dateLabel(latest.date)}</strong>
+          <span>PRICE OBSERVATION</span>
+          <strong>{usableQuote ? dateLabel(current.date) : dateLabel(latest.date)}</strong>
           <small>
-            {age === 0 ? "Today" : `${age} calendar days ago`}
-            <em> · daily data</em>
+            {usableQuote ? new Date(usableQuote.time).toISOString().slice(11, 16) + " UTC" : `${age} calendar days ago`}
+            <em> · {status}</em>
           </small>
         </div>
       </section>
@@ -345,7 +396,7 @@ function App() {
           <div className="chart-heading">
             <div>
               <h2>Price & valuation bands</h2>
-              <p>Index level at a given forward P/E</p>
+              <p>Historical daily bands; dashed gold line = latest quote</p>
             </div>
             <span className="chart-unit">INDEX POINTS</span>
           </div>
@@ -392,11 +443,12 @@ function App() {
             activeBand={activeBand}
             selectedIndex={selectedIndex}
             onInspect={inspect}
+            quote={usableQuote}
           />
           <div className="date-scrubber">
             <div className="scrubber-caption">
               <label htmlFor="date-slider">
-                Explore a date <span>· {dateLabel(focused.date)}</span>
+                Explore a daily observation <span>· {dateLabel(rows[focusIndex].date)}</span>
               </label>
               <button
                 className="latest-button"
@@ -423,7 +475,7 @@ function App() {
                 min={start}
                 max={rows.length - 1}
                 value={focusIndex}
-                aria-valuetext={`${dateLabel(focused.date)}, S&P 500 ${num(focused.spx, 2)}, forward P/E ${num(focused.pe, 2)}`}
+                aria-valuetext={`${dateLabel(rows[focusIndex].date)}, S&P 500 ${num(rows[focusIndex].spx, 2)}, forward P/E ${num(rows[focusIndex].pe, 2)}`}
                 onChange={(event) => selectDate(Number(event.target.value))}
               />
               <button
@@ -440,11 +492,11 @@ function App() {
         <aside className="inspector" aria-label="Selected date valuation">
           <div className="inspector-heading">
             <p className="eyebrow">
-              {focusIndex === rows.length - 1
-                ? "LATEST OBSERVATION"
+              {inspectCurrent
+                ? "LATEST AVAILABLE VALUATION"
                 : "HISTORICAL OBSERVATION"}
             </p>
-            <h2>{dateLabel(focused.date)}</h2>
+            <h2>{inspectCurrent && quoteTime ? quoteTime : dateLabel(focused.date)}</h2>
             <div className="observation">
               <span>
                 SPX <b>{num(focused.spx, 2)}</b>
@@ -465,7 +517,7 @@ function App() {
               this level.
             </p>
             <span className="scenario-formula">
-              ${num(focused.eps, 2)} EPS × {activeBand}
+              ${num(focused.eps, 2)} EPS × {activeBand} · EPS {dateLabel(inspectCurrent ? latest.date : focused.date)}
             </span>
           </div>
           <div className="ladder">

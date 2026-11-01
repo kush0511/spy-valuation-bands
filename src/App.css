@@ -836,3 +836,9 @@ footer a:hover {
     font-size: 11px;
   }
 }
+
+.quote-notice { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 20px; padding: 14px 18px; border: 1px solid #3c4649; border-radius: 12px; color: #aebfc7; font-size: 12px; line-height: 1.6; }
+.quote-notice b { color: #f6cc82; }
+.quote-notice span { overflow-wrap: anywhere; }
+.quote-warning { color: #f6cc82; }
+.inspector-heading h2 { overflow-wrap: anywhere; }

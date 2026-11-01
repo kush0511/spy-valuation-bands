@@ -5,6 +5,8 @@ on:
     branches: [main]
   schedule:
     - cron: '18 1 * * 2-6'
+    # Conservative UTC window covers US regular sessions across daylight-saving time.
+    - cron: '7,27,47 13-22 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -39,7 +41,11 @@ jobs:
         run: npm ci
 
       - name: Refresh valuation data
+        if: github.event_name != 'schedule' || github.event.schedule == '18 1 * * 2-6'
         run: npm run update-data
+
+      - name: Refresh latest index quote
+        run: node scripts/update-quote.mjs
 
       - name: Verify
         run: |
@@ -47,17 +53,18 @@ jobs:
           npm run lint
           npm run build
 
+      # Persist daily snapshots only; intraday artifacts do not create commits.
       # Persist real data and fetch provenance as repository activity. Without
       # commits, GitHub disables public-repository schedules after 60 days.
       # GITHUB_TOKEN commits do not trigger another push deployment.
       - name: Commit refreshed snapshot
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && (github.event_name != 'schedule' || github.event.schedule == '18 1 * * 2-6')
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/data/valuation-data.json
+          git add src/data/valuation-data.json public/latest-quote.json
           if ! git diff --cached --quiet; then
-            git commit -m "data: refresh valuation snapshot"
+            git commit -m "data: refresh market snapshots"
             git push origin HEAD:main
           fi
 
