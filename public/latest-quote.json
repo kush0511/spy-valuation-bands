@@ -1,7 +1,7 @@
 {
   "symbol": "^GSPC",
-  "price": 7580.07,
-  "time": 1793393263000,
-  "fetchedAt": "2026-11-01T14:35:03.135Z",
-  "regularSessionEnd": 1793390400000
+  "price": 7541.4,
+  "time": 1793656259000,
+  "fetchedAt": "2026-11-03T07:59:26.873Z",
+  "regularSessionEnd": 1793739600000
 }
